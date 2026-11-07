@@ -1,0 +1,5 @@
+/* demo only: Papá's phone shows just the day, the schedule and corrections */
+#tabs [data-tab=armar],#tabs [data-tab=jugadores],#tabs [data-tab=historial],#tabs [data-tab=respaldo]{display:none}
+/* T-1105: room for the shell's «Ver como» button on the title line only */
+header h1{margin-right:98px;font-size:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header .sub{margin-top:8px}
