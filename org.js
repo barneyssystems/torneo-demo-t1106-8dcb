@@ -127,8 +127,8 @@ const TABS = {
     const out = [el('div', { class: 'card', id: 'dayCard' }, el('h2', {}, 'El día'), el('div', { class: 'pad' }, el('div', { class: 'dayN' }, `${pr.done} de ${pr.total} partidos listos`), el('div', { class: 'bar2', role: 'img', 'aria-label': pct + '% listo' }, el('span', { class: 'fill w' + Math.round(pct / 5) * 5 })), ))];
     if (next.length) out.push(el('div', { class: 'card', id: 'nextCard' }, el('h2', {}, 'Siguen'), next.map((f) => { const p = L.participants(ST, f), ready = p.home && p.away;
       return el('div', { class: 'row' }, el('div', { class: 'team' }, L.title(ST, f), el('div', { class: 'meta' }, [f.kickoff ? L.t12(f.kickoff) : 'sin hora', f.pitch].filter(Boolean).join(' · '))),
-        ready ? el('button', { class: 'btn inline', 'data-sheet': f.id, onclick: () => { SHEET = { id: f.id, hg: 0, ag: 0, eh: 0, ea: 0, ph: 0, pa: 0, op: rid('s') }; render(); window.scrollTo(0, 0); } }, 'Anotar') : null); })));
-    if (last.length) out.push(el('div', { class: 'card', id: 'lastCard' }, el('h2', {}, 'Ya terminaron'), last.map((f) => { const r = ST.view.validApproved[f.id]; return el('div', { class: 'row' }, el('div', { class: 'team' }, L.title(ST, f)), el('div', { class: 'score' }, `${r.hg} – ${r.ag}`)); })));
+        ready ? el('button', { class: 'btn inline', 'data-sheet': f.id, onclick: () => { SHEET = { id: f.id, hg: 0, ag: 0, eh: 0, ea: 0, ph: 0, pa: 0, op: 's' + Array.from(crypto.getRandomValues(new Uint8Array(12)), (x) => x.toString(16).padStart(2, '0')).join('') }; render(); window.scrollTo(0, 0); } }, 'Anotar') : null); })));
+    if (last.length) out.push(el('div', { class: 'card', id: 'lastCard' }, el('h2', {}, 'Ya terminaron'), last.map((f) => { const r = L.finalScore(ST.view.validApproved[f.id]); return el('div', { class: 'row' }, el('div', { class: 'team' }, L.title(ST, f)), el('div', { class: 'score' }, `${r.hg} – ${r.ag}`)); })));
     return out;
   },
   horario() {

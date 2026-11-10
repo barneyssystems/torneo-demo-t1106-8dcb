@@ -48,6 +48,13 @@ function fresh() { return { tournament: null, rules: null, teams: M(), players: 
 
 // Both directions of a rollback in the effective event graph, including setup. Organizer-only.
 const KIND_OF = { TOURNAMENT_SET: 'setup', RULES_SET: 'setup', FORMAT_SET: 'setup', TEAM_ADDED: 'setup', TEAM_WITHDRAWN: 'setup', PLAYER_ADDED: 'setup', FIXTURE_ADDED: 'setup', REPORT_APPROVED: 'result', REPORT_SUBMITTED: 'report', FIXTURE_SCHEDULED: 'schedule', FIXTURES_SWAPPED: 'schedule', FIXTURE_REFEREE_SET: 'schedule', WAIVER_PUBLISHED: 'consent', SIGN_LINK_ISSUED: 'consent', WAIVER_SIGNED: 'consent', MEDIA_CONSENT_GRANTED: 'consent', MEDIA_CONSENT_REVOKED: 'consent', CONSENT_VERIFIED: 'consent' };
+// T1109-R1-02: how many consents would this rollback nominally restore but the durable tomb keeps off? From RAW history: a preview must warn even when an earlier rollback already removed the revocation.
+function revocationsKept(log, targetNode) {
+  const lastRev = Object.create(null), grants = Object.create(null);
+  for (const e of log) if (e.type === 'MEDIA_CONSENT_REVOKED') lastRev[e.payload.playerId] = e.seq;
+  for (const s of seqsOf(targetNode)) { const e = log[s - 1]; if (e.type === 'MEDIA_CONSENT_GRANTED') grants[e.payload.playerId] = s; else if (e.type === 'MEDIA_CONSENT_REVOKED') delete grants[e.payload.playerId]; }
+  return Object.keys(grants).filter((pid) => lastRev[pid] > grants[pid]).length;
+}
 function rollbackImpact(log, toSeq) {
   const eff = effectiveNodes(log), n = log.length, before = seqsOf(eff[n]), bset = new Set(before), after = new Set(seqsOf(eff[toSeq]));
   const team = {}, fix = {}; for (const e of log) { if (e.type === 'TEAM_ADDED') team[e.payload.id] = e.payload.name; if (e.type === 'FIXTURE_ADDED') fix[e.payload.id] = e.payload; }
@@ -71,7 +78,7 @@ function rollbackImpact(log, toSeq) {
     add(sch, plural(sch, 'cambio de horario', 'cambios de horario')); add(con, plural(con, 'permiso o firma', 'permisos y firmas')); add(oth, plural(oth, 'otro cambio', 'otros cambios'));
     return summary;
   }
-  return { toSeq, head: n, revocationsKept: before.filter((s) => !after.has(s) && log[s - 1].type === 'MEDIA_CONSENT_REVOKED').length, effective: before.filter(visible).length, leaving, restoring, summary: summarize(leaving), restoringSummary: summarize(restoring), deletesSetup: leaving.some((x) => x.kind === 'setup') };
+  return { toSeq, head: n, revocationsKept: revocationsKept(log, eff[toSeq]), effective: before.filter(visible).length, leaving, restoring, summary: summarize(leaving), restoringSummary: summarize(restoring), deletesSetup: leaving.some((x) => x.kind === 'setup') };
 }
 function syncConsent(st, pid) {
   const c = st.consents[pid], pl = st.players[pid];

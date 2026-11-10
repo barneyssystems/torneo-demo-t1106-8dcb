@@ -3,7 +3,7 @@
 (function () {
 const KINDS = { partido: 'Del partido', cancha: 'De la cancha', aficion: 'Afición', equipos: 'Equipos', premios: 'Premiación', dia: 'Todo el día' };
 const fxById = (id) => (DATA.fixtures || []).find((f) => f.id === id) || null;
-const vTitle = (v) => { const f = fxById(v.fixtureId); return (f ? `${f.home || srcName(f.homeSource)} ${f.result ? f.result.hg + '–' + f.result.ag : 'vs'} ${f.away || srcName(f.awaySource)}` : 'Resumen del partido'); };
+const vTitle = (v) => { const f = fxById(v.fixtureId); return (f ? `${f.home || srcName(f.homeSource)} ${f.result ? L.finalScore(f.result).hg + '–' + L.finalScore(f.result).ag : 'vs'} ${f.away || srcName(f.awaySource)}` : 'Resumen del partido'); };
 const safeUrl = (u) => { try { const x = new URL(u); return x.protocol === 'https:' ? x.href : null; } catch { return null; } };
 // T-1109 (TOR-T1106-06): sample media is inert (no link at all) and says so, on every card.
 const isSample = (x) => !!(window.TosDemoMedia && window.TosDemoMedia.isSample && window.TosDemoMedia.isSample(x)), linkOf = (x) => (isSample(x) ? null : safeUrl(x.url));
