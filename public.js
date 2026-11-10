@@ -171,7 +171,7 @@ const R = {
 // then fewest conceded, then more games played. A team appears after its first game.
 function vallaRows(fixtures) {
   const m = new Map(); const add = (team, ga) => { if (!team) return; const r = m.get(team) || { team, pj: 0, gc: 0, zero: 0 }; r.pj += 1; r.gc += ga; if (ga === 0) r.zero += 1; m.set(team, r); };
-  for (const f of fixtures || []) { if (!f.result || f.result.wo || f.lifecycle === 'withdrawn' || !f.home || !f.away) continue; const s = L.finalScore(f.result); add(f.home, s.ag); add(f.away, s.hg); }
+  for (const f of fixtures || []) { if (!f.result || f.result.wo || f.lifecycle !== 'finished' || f.invalidated || /^Resultado anulado/.test(f.status || '') || !f.home || !f.away) continue; /* TOR-T1110-04: only results that stand now (the public view already drops voided ones; this repeats it here) */ const s = L.finalScore(f.result); add(f.home, s.ag); add(f.away, s.hg); }
   return [...m.values()].sort((a, b) => a.gc / a.pj - b.gc / b.pj || a.gc - b.gc || b.pj - a.pj || a.team.localeCompare(b.team));
 }
 function vallaCard() {
