@@ -329,3 +329,12 @@ nav.tabs{z-index:30}
 .demoTag{display:block;margin-top:4px;font-size:12px;font-weight:700;color:var(--gold2)}.vtx .demoTag{color:#8a6a10}.vfeat .vtx .demoTag{color:var(--gold2)}
 .kick .kbtns{display:flex;flex-direction:column;gap:6px}.kick .pause{background:#2a3050;color:#fff}.kick .go.kmini{padding:0 14px}
 .srOnly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* T-1110: videos play inside the app */
+.vplayer{display:block;width:100%;aspect-ratio:16/9;background:#000;border:0;border-radius:12px}
+.vfeat .vplayer{border-radius:0}
+.vitem.vplaying:not(.vfeatlink){flex-direction:column;align-items:stretch}
+.vplay-in{cursor:pointer}
+.vgone{display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;padding:16px;text-align:center}
+.vallaS{margin:0 14px 6px;font-size:12px}.trow.valla .vnum{color:var(--mute);font-weight:700;text-align:center}
+.trow.sc.lead .vnum{color:#cdd6ea}button.leaders{display:flex;width:100%;text-align:left;border:0;font:inherit;cursor:pointer}

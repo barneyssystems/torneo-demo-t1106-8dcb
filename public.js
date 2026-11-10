@@ -106,6 +106,7 @@ const R = {
     if (DATA.rulesLabel) out.push(el('div', { class: 'banner warn', id: 'rulesLabel' }, 'Reglas: ' + DATA.rulesLabel + '. Provisionales hasta que el organizador las confirme.'));
     const leads = Object.entries(DATA.tables).map(([g, t]) => t[0] && t[0].played > 0 ? `Grupo ${g}: ${t[0].team}` : `Grupo ${g}: aún sin partidos`);
     if (Object.values(DATA.tables).some((t) => t[0] && t[0].played > 0)) out.push(el('div', { class: 'leaders', id: 'leaders' }, el('b', {}, 'Líderes'), el('span', {}, leads.join('  ·  '))));
+    { const vr = vallaRows(DATA.fixtures); if (vr.length) out.push(el('button', { class: 'leaders tap', id: 'vallaLead', onclick: () => { TAB = 'goleadores'; syncTabs(); render(); setTimeout(() => { const n = document.getElementById('valla'); if (n) n.scrollIntoView({ block: 'start' }); }, 0); } }, el('b', {}, 'Valla menos vencida'), el('span', {}, `${vr[0].team}${vr.length > 1 && vr[1].gc / vr[1].pj === vr[0].gc / vr[0].pj && vr[1].gc === vr[0].gc && vr[1].pj === vr[0].pj ? ' (empatado)' : ''} · ${vr[0].gc} ${vr[0].gc === 1 ? 'gol recibido' : 'goles recibidos'} en ${vr[0].pj} ${vr[0].pj === 1 ? 'partido' : 'partidos'} ›`))); }
     for (const [g, t] of Object.entries(DATA.tables)) {
       const rows = [], closed = t.length && t.every((r) => r.edge !== 'En disputa'), showZones = t.length && t.every((r) => r.played > 0);
       t.forEach((r, i) => {
@@ -152,18 +153,37 @@ const R = {
           el('span', {}, [fx(b.id).kickoff && b.result ? t12(fx(b.id).kickoff) : '', fx(b.id).pitch, b.result && b.result.pens ? 'Penales ' + b.result.pens.hg + '-' + b.result.pens.ag : ''].filter(Boolean).join(' · '))))]))));
   },
   goleadores() {
-    if (DATA.scorers === null) return [el('div', { class: 'empty', id: 'noscorers' }, 'Los goleadores no se guardan en el teléfono: vuelve a intentarlo con conexión.')];
+    const vc = vallaCard();
+    if (DATA.scorers === null) return [el('div', { class: 'empty', id: 'noscorers' }, 'Los goleadores no se guardan en el teléfono: vuelve a intentarlo con conexión.'), vc].filter(Boolean);
     const st = DATA.stats, summary = st && st.played ? el('div', { class: 'sumCard', id: 'sumCard' }, el('div', {}, el('b', {}, st.goals), el('span', {}, 'goles')), el('div', {}, el('b', {}, st.played), el('span', {}, 'partidos')), el('div', {}, el('b', {}, String(st.perMatch).replace('.', ',')), el('span', {}, 'goles por partido'))) : null;
     const named = (DATA.scorers || []).reduce((n, x) => n + x.goals, 0), unnamed = st ? st.goals - named : 0;
     const unnamedNote = unnamed > 0 ? el('p', { class: 'meta center', id: 'unnamed' }, `${unnamed} ${unnamed === 1 ? 'gol' : 'goles'} sin autor anotado.`) : null;
-    if (!DATA.scorers.length) return [summary, unnamedNote, el('div', { class: 'empty' }, 'Aún no hay goles con nombre. Aparecen cuando el árbitro anota quién metió cada gol.')].filter(Boolean);
+    if (!DATA.scorers.length) return [summary, unnamedNote, el('div', { class: 'empty' }, 'Aún no hay goles con nombre. Aparecen cuando el árbitro anota quién metió cada gol.'), vc].filter(Boolean);
     let rank = 0, prev = null;
     return [summary, unnamedNote, el('div', { class: 'tcard' }, el('h2', {}, 'Goleadores'), DATA.scorers.map((x, i) => { if (x.goals !== prev) { rank = i + 1; prev = x.goals; }
       const [who, team] = String(x.label).split(' · '); const soleLeader = DATA.scorers.filter((y) => y.goals === DATA.scorers[0].goals).length === 1;
       return el('div', { class: 'trow sc' + (rank === 1 && soleLeader ? ' lead' : '') }, el('span', { class: 'pos' }, rank), el('span', { class: 'tm' }, badge(team), el('span', { class: 'tn' }, who, el('small', {}, team))), el('span', {}), el('span', {}), el('span', { class: 'pts' }, x.goals), el('span', {})); })),
-      null].filter(Boolean);
+      vc].filter(Boolean);
   },
 };
+// T-1110 (founder 2026-11-10: "I personally don't see the valla menos vencida race"): the fewest-goals-conceded race, next to Goleadores.
+// From published results only (groups + knockout, extra time counts, penalties and W.O. do not: nobody defended a W.O.). Order: fewest conceded per game,
+// then fewest conceded, then more games played. A team appears after its first game.
+function vallaRows(fixtures) {
+  const m = new Map(); const add = (team, ga) => { if (!team) return; const r = m.get(team) || { team, pj: 0, gc: 0, zero: 0 }; r.pj += 1; r.gc += ga; if (ga === 0) r.zero += 1; m.set(team, r); };
+  for (const f of fixtures || []) { if (!f.result || f.result.wo || f.lifecycle === 'withdrawn' || !f.home || !f.away) continue; const s = L.finalScore(f.result); add(f.home, s.ag); add(f.away, s.hg); }
+  return [...m.values()].sort((a, b) => a.gc / a.pj - b.gc / b.pj || a.gc - b.gc || b.pj - a.pj || a.team.localeCompare(b.team));
+}
+function vallaCard() {
+  const rows = vallaRows(DATA.fixtures), avg = (r) => String(Math.round((r.gc / r.pj) * 100) / 100).replace('.', ',');
+  if (!rows.length) return el('div', { class: 'tcard', id: 'valla' }, el('h2', {}, 'Valla menos vencida'), el('p', { class: 'meta pad' }, 'Aparece con el primer resultado publicado: el equipo que menos goles recibe.'));
+  let rank = 0, prevKey = null; const key = (r) => r.gc / r.pj + '|' + r.gc + '|' + r.pj, sole = rows.length < 2 || key(rows[0]) !== key(rows[1]);
+  return el('div', { class: 'tcard', id: 'valla' }, el('h2', {}, 'Valla menos vencida'), el('p', { class: 'meta vallaS' }, 'Gana el equipo que recibe menos goles por partido.'),
+    el('div', { class: 'trow thead', 'aria-hidden': 'true' }, el('span', {}, '#'), el('span', { class: 'tm' }, 'Equipo'), el('span', {}, 'PJ'), el('span', {}, 'En 0'), el('span', {}, 'GC'), el('span', {})),
+    rows.map((r, i) => { if (key(r) !== prevKey) { rank = i + 1; prevKey = key(r); }
+      return el('div', { class: 'trow sc valla' + (rank === 1 && sole ? ' lead' : ''), 'data-valla': r.team }, el('span', { class: 'pos' }, rank), el('span', { class: 'tm' }, badge(r.team), el('span', { class: 'tn' }, r.team, el('small', {}, `${avg(r)} por partido`))),
+        el('span', { class: 'vnum', 'aria-label': 'jugados' }, r.pj), el('span', { class: 'vnum', 'aria-label': 'vallas en cero' }, r.zero), el('span', { class: 'pts', 'aria-label': 'goles recibidos' }, r.gc), el('span', {})); }));
+}
 function syncTabs() { document.querySelectorAll('nav.tabs button').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === TAB))); }
 const noLive = (x) => JSON.stringify({ ...x, asOf: 0, fixtures: (x.fixtures || []).map((f) => ({ ...f, live: undefined })) });
 function render() {
