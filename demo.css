@@ -3,3 +3,5 @@
 /* T-1105: room for the shell's «Ver como» button on the title line only */
 header h1{margin-right:98px;font-size:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 header .sub{margin-top:8px}
+/* T-1110-2: the photo viewer clears the shell's «Ver como» button (demo only) */
+.pview .pvbar{padding-top:72px}
