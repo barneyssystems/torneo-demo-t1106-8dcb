@@ -1,5 +1,5 @@
 'use strict';
-const KEYS = ['tos-demo-log-v1', 'tos-demo-log-v2-off', 'tos-demo-log-v2-media', 'tos-demo-log-v2-cup-off', 'tos-demo-log-v2-cup-qf-off']; // every mode's stored demo history
+const KEYS = ['tos-demo-log-v1', 'tos-demo-log-v2-off', 'tos-demo-log-v2-media', 'tos-demo-log-v2-media-t1109', 'tos-demo-log-v2-cup-off', 'tos-demo-log-v2-cup-qf-off']; // every mode's stored demo history
 const frames = { familia: document.getElementById('f-familia'), arbitro: document.getElementById('f-arbitro'), papa: document.getElementById('f-papa') };
 const LABEL = { familia: 'Ver como', arbitro: 'Árbitro', papa: 'Organizador' };
 const panel = document.getElementById('demoPanel'), scrim = document.getElementById('scrim'), menuBtn = document.getElementById('demoMenu');
@@ -16,7 +16,8 @@ scrim.addEventListener('click', () => sheet(false));
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) { sheet(false); menuBtn.focus(); } });
 document.getElementById('reset').addEventListener('click', () => {
   if (!confirm('¿Empezar de nuevo? Se borra lo que hiciste en esta prueba.')) return;
-  for (const k of KEYS) localStorage.removeItem(k); try { sessionStorage.removeItem('tos-live-t0'); } catch {} for (const f of Object.values(frames)) f.contentWindow.location.reload(); sheet(false);
+  // T-1109 (TOR-T1106-09): every demo-owned namespace goes (clocks, queued and failed referee reports, cached fixtures, recovery notes, the offline copy). The Pages origin is shared, so only these exact prefixes.
+  for (const k of KEYS) localStorage.removeItem(k); for (const k of Object.keys(localStorage)) if (/^(tos-demo-log-|tos-kick-|refQueue:|refFixtures:|refRecover|ultimo$)/.test(k)) localStorage.removeItem(k); try { sessionStorage.removeItem('tos-live-t0'); } catch {} for (const f of Object.values(frames)) f.contentWindow.location.reload(); sheet(false);
 });
 // ARIA tabs keyboard pattern for the role list (same as ui.js tabKeys; the shell does not load ui.js)
 (() => { const nav = document.querySelector('.bar'), tabs = () => [...nav.querySelectorAll('[role=tab]')]; tabs().forEach((t) => { t.setAttribute('aria-controls', 'f-' + t.dataset.role); document.getElementById('f-' + t.dataset.role).setAttribute('role', 'tabpanel'); });

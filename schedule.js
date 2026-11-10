@@ -131,5 +131,15 @@ function checkSchedule(fixtures, groups, rounds) {
   }
   return { ok: true, slots: slots.length, backToBack };
 }
-const api = { generateSchedule, checkSchedule, roundRobin, buildPlan, planFits, planEvents, qualifiersFor };
+// T-1109 (TOR-T1106-05): the knockout needs a saved qualifier count, even when nobody chose rules yet. Saved in the SAME batch, before the matches that draw on it. No rules yet = the July Cup rulebook defaults (3-1-0, straight penalties).
+const DEFAULT_RULES = { points: { win: 3, draw: 1, loss: 0 }, tiebreak: ['won', 'gd', 'gf', 'h2h_result', 'fairplay', 'ga_fewest'], walkoverGoals: 3, koLevel: 'PENS' };
+function withQualifierRule(plan, rules, need) {
+  if (!need) return plan; // group-only shapes
+  const rank = (src) => { const m = /^([1-9])/.exec(src || ''); return m ? Number(m[1]) : 0; };
+  for (const e of plan) if (e.type === 'FIXTURE_ADDED' && e.payload.stage === 'ko' && Math.max(rank(e.payload.homeSource), rank(e.payload.awaySource)) > need) throw new Error(`Ese calendario usa un puesto que no clasifica: solo clasifican ${need} por grupo.`);
+  const r0 = rules || {}; if (r0.points && r0.qualifiersPerGroup === need) return plan;
+  const { preset, ...rest } = r0;
+  return [{ type: 'RULES_SET', payload: { ...DEFAULT_RULES, ...rest, qualifiersPerGroup: need } }, ...plan];
+}
+const api = { generateSchedule, checkSchedule, roundRobin, buildPlan, planFits, planEvents, qualifiersFor, withQualifierRule };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else window.Schedule = api;

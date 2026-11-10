@@ -31,9 +31,9 @@ const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 600
 const open = (id) => { MATCH = id; window.scrollTo(0, 0); render(); };
 function card(f) {
   const r = f.result, lv = !r && f.live;
-  const mid = r ? el('div', { class: 'big' }, el('span', {}, r.hg), el('span', { class: 'dash' }, '–'), el('span', {}, r.ag)) : lv ? el('div', { class: 'big liveScore' }, el('span', {}, lv.hg), el('span', { class: 'dash' }, '–'), el('span', {}, lv.ag)) : el('div', { class: 'big soon' }, t12(f.kickoff) || 'vs');
+  const fin = r ? L.finalScore(r) : null; const mid = r ? el('div', { class: 'big' }, el('span', {}, fin.hg), el('span', { class: 'dash' }, '–'), el('span', {}, fin.ag)) : lv ? el('div', { class: 'big liveScore' }, el('span', {}, lv.hg), el('span', { class: 'dash' }, '–'), el('span', {}, lv.ag)) : el('div', { class: 'big soon' }, t12(f.kickoff) || 'vs');
   const ps = L.publicState(f), state = lv ? 'EN VIVO ' + lv.minute + "'" : ps.kind === 'todo' && NEXT && NEXT.id === f.id ? 'Siguiente' : ps.label;
-  const extra = r && (r.pens ? ` · Penales ${r.pens.hg}-${r.pens.ag}` : r.et ? ` · Prórroga ${r.et.hg}-${r.et.ag}` : '') || '';
+  const extra = r && ((r.pens ? ` · Penales ${r.pens.hg}-${r.pens.ag}` : r.et ? ' · En prórroga' : '')) || '';
   return el('div', { class: 'mcard tap' + (lv ? ' isLive' : '') + (NEWRES.includes(f.id) ? ' flashNew' : ''), 'data-fixture': f.id, role: 'button', tabindex: '0', 'aria-label': 'Ver el partido', onclick: () => open(f.id), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(f.id); } } }, el('div', { class: 'mrow' }, side(f.home, f.homeSource), mid, side(f.away, f.awaySource, true)),
     (r && f.goals && f.goals.some((g) => g.label) ? el('div', { class: 'mgoals' }, '⚽ ' + f.goals.filter((g) => g.label).slice(0, 4).map((g) => `${g.label} (${initials(g.side === 'h' ? f.home : f.away)})${g.minute ? ' ' + g.minute + "'" : ''}`).join(' · ')) : null),
     el('div', { class: 'mfoot' }, el('span', { class: 'chip ' + (r ? 'fin' : lv ? 'live' : 'next') }, state), el('span', {}, [f.pitch, f.stage === 'group' ? 'Grupo ' + f.groupId : f.round].filter(Boolean).join(' · ') + extra + (f.corrected ? ' · resultado corregido' : '') + ' ›')), vidChip(f));
@@ -51,9 +51,7 @@ function timeline(f, r, lv, gsrc) {
       el('span', { class: 'who' }, el('i', { class: 'ico', 'aria-hidden': 'true' }, '⚽'), (g.label || 'Gol') + ' ', el('small', {}, `${team} · ${h}–${a}`)))); }
   const named = goals.some((g) => g.label), total = r.hg + r.ag;
   if (lv) items.push(el('li', { class: 'tli mark now' }, el('span', { class: 'tm' }, 'En vivo ' + lv.minute + "'")));
-  else { items.push(el('li', { class: 'tli mark' }, el('span', { class: 'tm' }, 'Final ' + r.hg + '–' + r.ag)));
-    if (r.et) items.push(el('li', { class: 'tli mark' }, el('span', { class: 'tm' }, `Prórroga ${r.et.hg}–${r.et.ag}`)));
-    if (r.pens) items.push(el('li', { class: 'tli mark' }, el('span', { class: 'tm' }, `Penales ${r.pens.hg}–${r.pens.ag}`))); }
+  else for (const m of L.timelineMarks(r)) items.push(el('li', { class: 'tli mark' }, el('span', { class: 'tm' }, m))); // T-1109 (TOR-T1106-07): regulation, extra time, then the real final score, then penalties
   return el('section', { class: 'tl', id: 'timeline', 'aria-label': 'Minuto a minuto' }, el('h3', { class: 'tlH' }, 'Minuto a minuto'), el('ol', {}, items),
     total > 0 && !goals.length ? el('p', { class: 'tlNote' }, 'Todavía no se anotó quién metió los goles.') : total === 0 ? el('p', { class: 'tlNote' }, 'Sin goles.') : !named && !lv ? el('p', { class: 'tlNote' }, 'El árbitro no anotó los nombres de los goleadores.') : null);
 }
@@ -66,10 +64,11 @@ const R = {
     return [el('button', { class: 'back', id: 'backMatch', onclick: () => { MATCH = null; render(); } }, '‹ Volver'),
       el('div', { class: 'hero', 'data-match-page': f.id }, lv && lv.sim ? el('small', { class: 'simNote' }, 'Demostración: partido simulado') : null, el('div', { class: 'heroMeta' }, [f.stage === 'group' ? 'Grupo ' + f.groupId : f.round, f.kickoff ? dayLabel(f.kickoff) + ' · ' + t12(f.kickoff) : '', f.pitch].filter(Boolean).join(' · ')),
         el('div', { class: 'heroRow' }, el('div', { class: 'hs' }, badge(f.home), el('span', {}, f.home || srcName(f.homeSource))),
-          r ? el('div', { class: 'heroScore' }, el('span', {}, r.hg), el('span', { class: 'dash' }, '–'), el('span', {}, r.ag)) : el('div', { class: 'heroScore soon' }, t12(f.kickoff) || 'vs'),
+          r ? el('div', { class: 'heroScore' }, el('span', {}, (f.result ? L.finalScore(r) : r).hg), el('span', { class: 'dash' }, '–'), el('span', {}, (f.result ? L.finalScore(r) : r).ag)) : el('div', { class: 'heroScore soon' }, t12(f.kickoff) || 'vs'),
           el('div', { class: 'hs' }, badge(f.away), el('span', {}, f.away || srcName(f.awaySource)))),
-        el('div', { class: 'heroPill' }, el('span', { class: 'chip ' + (r ? 'fin' : 'next') }, state), r && r.pens ? el('span', { class: 'meta heroX' }, `Penales ${r.pens.hg}-${r.pens.ag}`) : r && r.et ? el('span', { class: 'meta heroX' }, `Prórroga ${r.et.hg}-${r.et.ag}`) : null),
+        el('div', { class: 'heroPill' }, el('span', { class: 'chip ' + (r ? 'fin' : 'next') }, state), r && r.pens ? el('span', { class: 'meta heroX' }, `Penales ${r.pens.hg}-${r.pens.ag}`) : r && r.et ? el('span', { class: 'meta heroX' }, `Con prórroga (${r.et.hg}-${r.et.ag})`) : null),
         !r ? el('p', { class: 'meta center', id: 'noResult' }, ps.kind === 'annulled' ? 'El resultado anterior se anuló y hay que volver a anotarlo: ' + ps.note : ps.kind === 'withdrawn' ? ps.note : 'El resultado aparece aquí cuando el organizador lo aprueba.') : null),
+      el('div', { class: 'srOnly', role: 'status', 'aria-live': 'polite', id: 'liveAnn' }),
       timeline(f, r, lv, gsrc),
       ...matchMedia(f), // T-1106: the game's highlight and album (links the organizer added)
       f.stage === 'group' ? el('button', { class: 'btn sec', id: 'toTable', onclick: () => { MATCH = null; TAB = 'grupos'; syncTabs(); render(); } }, 'Ver la tabla del grupo') : el('button', { class: 'btn sec', id: 'toBracket', onclick: () => { MATCH = null; TAB = 'eliminatorias'; syncTabs(); render(); } }, 'Ver el cuadro')];
@@ -139,7 +138,7 @@ const R = {
     if (semis.length === 2 && fin) { // a real bracket: two semifinals side by side, joined to the final
       const tc = (b, cls) => el('div', { class: 'tc' + (b.home && b.away ? ' tap' : '') + (cls ? ' ' + cls : ''), 'data-ko': b.id, ...(b.home && b.away ? { role: 'button', tabindex: '0', onclick: () => { TAB = 'partidos'; syncTabs(); open(b.id); }, onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); TAB = 'partidos'; syncTabs(); open(b.id); } } } : {}) },
         el('div', { class: 'tcH' }, el('b', {}, b.round), el('span', {}, [fx(b.id).kickoff ? t12(fx(b.id).kickoff) : '', fx(b.id).pitch].filter(Boolean).join(' · '))),
-        [[b.home, b.homeSource, b.result && b.result.hg], [b.away, b.awaySource, b.result && b.result.ag]].map(([n, src, g]) => { const pv = !n && provisional(src); return el('div', { class: 'tcRow' + (n && b.winner === n ? ' win' : '') + (pv ? ' prov' : '') }, badge(n || (pv && pv.name)), el('span', { class: 'tn' }, n || (pv ? pv.name : srcName(src)), pv ? el('small', {}, `va ${pv.pos}º del grupo ${pv.group}`) : null), el('span', { class: 'tg' }, g === null || g === undefined ? '' : g)); }),
+        [[b.home, b.homeSource, b.result && L.finalScore(b.result).hg], [b.away, b.awaySource, b.result && L.finalScore(b.result).ag]].map(([n, src, g]) => { const pv = !n && provisional(src); return el('div', { class: 'tcRow' + (n && b.winner === n ? ' win' : '') + (pv ? ' prov' : '') }, badge(n || (pv && pv.name)), el('span', { class: 'tn' }, n || (pv ? pv.name : srcName(src)), pv ? el('small', {}, `va ${pv.pos}º del grupo ${pv.group}`) : null), el('span', { class: 'tg' }, g === null || g === undefined ? '' : g)); }),
         el('div', { class: 'tcS', 'data-ko-status': b.id }, statusOf(b) + (b.result && b.result.pens ? ` · Penales ${b.result.pens.hg}-${b.result.pens.ag}` : '')));
       if (semis.some((b) => !b.home || !b.away)) out.push(el('p', { class: 'meta center', id: 'koWait' }, 'Los equipos se definen cuando terminan los partidos de grupo.'));
       const qf = DATA.bracket.filter((b) => /^Cuartos/.test(b.round)); // T-1106: Dad's knockout starts at the quarterfinals
@@ -166,11 +165,15 @@ const R = {
   },
 };
 function syncTabs() { document.querySelectorAll('nav.tabs button').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === TAB))); }
+const noLive = (x) => JSON.stringify({ ...x, asOf: 0, fixtures: (x.fixtures || []).map((f) => ({ ...f, live: undefined })) });
 function render() {
   if (!DATA) return;
+  header();
+  view.replaceChildren(...(MATCH ? R.partido() : (R[TAB] || UCL_R[TAB])()));
+}
+function header() {
   document.getElementById('tname').textContent = DATA.tournament ? DATA.tournament.name : 'Torneo';
   document.getElementById('asof').textContent = [DATA.tournament && DATA.tournament.date ? new Date(DATA.tournament.date + 'T12:00').toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' }) : '', (STALE ? 'Sin conexión · datos de ' + (DATA.asOf ? fmtTime(DATA.asOf) : '—') : 'Actualizado ' + (DATA.asOf ? ago(DATA.asOf) : '—'))].filter(Boolean).join(' · ');
-  view.replaceChildren(...(MATCH ? R.partido() : (R[TAB] || UCL_R[TAB])()));
 }
 // What changed since the last load: new results (flash + toast) and table movement (▲/▼). Memory only; nothing is stored.
 function trackChanges(d) {
@@ -184,7 +187,8 @@ async function load() {
     const r = await fetch('/api/public', { cache: 'no-store' });
     if (r.status === 503) { const j = await r.json(); DATA = null; view.replaceChildren(); setBanner('bad', 'Los resultados no están disponibles en este momento (' + j.detail + '). No mostramos datos que no podamos garantizar.'); document.getElementById('asof').textContent = 'No disponible'; return; }
     if (!r.ok) throw new Error('http ' + r.status);
-    DATA = await r.json(); STALE = null; setBanner(null); trackChanges(DATA);
+    const prev = DATA; DATA = await r.json(); STALE = null; setBanner(null); trackChanges(DATA);
+    var unchanged = !!prev && noLive(prev) === noLive(DATA); // T-1109: on an open match page a refresh with no news must not replace the page (focus, screen reader)
     { const names = [...new Set(Object.values(DATA.tables || {}).flat().map((x) => x.team))].sort(); TEAMIDX = Object.assign(Object.create(null), Object.fromEntries(names.map((n, i) => [n, i * 5 % 12 + (i >= 12 ? 1 : 0)]))); } // distinct colours: teams are spread over the palette by their order, not by a hash that can collide
     // W2-B-02: the offline copy NEVER contains player identities (consent can be revoked while this phone is offline)
     try { localStorage.setItem('ultimo', JSON.stringify(offlineCopy(DATA))); } catch {}
@@ -193,6 +197,7 @@ async function load() {
     if (c) { DATA = offlineCopy(JSON.parse(c)); STALE = true; setBanner('warn', 'Sin conexión: mostrando la última copia guardada. Puede no estar al día.'); }
     else { DATA = null; view.replaceChildren(); setBanner('bad', 'Sin conexión y sin copia guardada. Intenta de nuevo cuando tengas señal.'); document.getElementById('asof').textContent = 'No disponible'; return; }
   }
+  if (unchanged && MATCH) return header();
   render();
 }
 document.querySelectorAll('nav.tabs button').forEach((b) => b.addEventListener('click', () => {
@@ -200,12 +205,21 @@ document.querySelectorAll('nav.tabs button').forEach((b) => b.addEventListener('
 }));
 load(); setInterval(load, 20000); // while a match is live, refresh every 2 s so the minute runs
 setInterval(tickLive, 2000);
+function patchLiveMatch(f, lv) {
+  const sc = document.querySelector('[data-match-page] .heroScore'); if (!sc) return render();
+  const nums = [...sc.querySelectorAll('span')].filter((n) => !n.classList.contains('dash')), now = lv.hg + '-' + lv.ag, was = nums.map((n) => n.textContent).join('-');
+  const pill = document.querySelector('[data-match-page] .heroPill .chip'); if (pill) pill.textContent = 'EN VIVO ' + lv.minute + "'";
+  const mark = document.querySelector('#timeline .tli.now .tm'); if (mark) mark.textContent = 'En vivo ' + lv.minute + "'";
+  if (was !== now && nums.length === 2) { nums[0].textContent = lv.hg; nums[1].textContent = lv.ag;
+    const t = document.getElementById('timeline'), nt = timeline(f, { hg: lv.hg, ag: lv.ag }, lv, lv.goals); if (t && nt) t.replaceWith(nt);
+    const ann = document.getElementById('liveAnn'); if (ann) ann.textContent = `Gol. ${f.home} ${lv.hg}, ${f.away} ${lv.ag}.`; } // only a real score change is announced
+}
 // The live minute updates IN PLACE (no re-render, so a tap or a scroll is never interrupted); any other change goes through the normal load().
 async function tickLive() {
   if (!DATA || !DATA.fixtures || !DATA.fixtures.some((f) => f.live && !f.result)) return;
-  try { const r = await fetch('/api/public', { cache: 'no-store' }); if (!r.ok) return; const d = await r.json(); const strip = (x) => JSON.stringify({ ...x, asOf: 0, fixtures: (x.fixtures || []).map((f) => ({ ...f, live: undefined })) });
-    if (strip(d) !== strip(DATA)) return load(); const lf = (d.fixtures || []).find((f) => f.live && !f.result); DATA = d; if (!lf) return load(); const lv = lf.live;
-    if (MATCH === lf.id) return render(); // the open match page (timeline) follows the live match
+  try { const r = await fetch('/api/public', { cache: 'no-store' }); if (!r.ok) return; const d = await r.json(); 
+    if (noLive(d) !== noLive(DATA)) return load(); const lf = (d.fixtures || []).find((f) => f.live && !f.result); DATA = d; if (!lf) return load(); const lv = lf.live;
+    if (MATCH === lf.id) return patchLiveMatch(lf, lv); // T-1109 (TOR-T1106-10): patched in place so focus and a screen reader's place survive every tick
     const set = (sel, txt) => document.querySelectorAll(sel).forEach((n) => { n.textContent = txt; });
     set('#liveHero .lmin', lv.minute + "'"); const sc = document.querySelector('#liveHero .lhScore'); if (sc) sc.replaceChildren(el('span', {}, lv.hg), el('span', { class: 'dash' }, '–'), el('span', {}, lv.ag));
     const gl = document.querySelector('#liveHero .lhGoals'); if (gl) gl.replaceChildren(...lv.goals.map((g) => el('span', {}, `⚽ ${g.minute}' ${g.side === 'h' ? lf.home : lf.away}`)));

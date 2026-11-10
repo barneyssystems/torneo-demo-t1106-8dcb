@@ -71,7 +71,7 @@ function rollbackImpact(log, toSeq) {
     add(sch, plural(sch, 'cambio de horario', 'cambios de horario')); add(con, plural(con, 'permiso o firma', 'permisos y firmas')); add(oth, plural(oth, 'otro cambio', 'otros cambios'));
     return summary;
   }
-  return { toSeq, head: n, effective: before.filter(visible).length, leaving, restoring, summary: summarize(leaving), restoringSummary: summarize(restoring), deletesSetup: leaving.some((x) => x.kind === 'setup') };
+  return { toSeq, head: n, revocationsKept: before.filter((s) => !after.has(s) && log[s - 1].type === 'MEDIA_CONSENT_REVOKED').length, effective: before.filter(visible).length, leaving, restoring, summary: summarize(leaving), restoringSummary: summarize(restoring), deletesSetup: leaving.some((x) => x.kind === 'setup') };
 }
 function syncConsent(st, pid) {
   const c = st.consents[pid], pl = st.players[pid];
@@ -145,7 +145,11 @@ function foldSeqs(log, seqs) { const st = fresh(); for (const s of seqs) apply(s
 // the ledger to the folded state: an approval or report version that was ever voided cannot stand again; only a NEW report + approval can.
 // Ordinary corrections are not voids, so exact rollback of corrections and setup (A4-08) is unchanged.
 const tombLedger = () => Object.create(null);
+// T-1109 (TOR-T1106-02, P0): a revoked consent is a durable privacy fact too. The newest revocation seen in the RAW history, per player, lives here (a Symbol key: a fixture id can never collide with it).
+const CONSENT_TOMBS = Symbol('consentTombs');
 function recordTombs(st, tomb) {
+  const ct = tomb[CONSENT_TOMBS] || (tomb[CONSENT_TOMBS] = Object.create(null));
+  for (const [pid, c] of Object.entries(st.consents)) if (c.revokedSeq && (ct[pid] || 0) < c.revokedSeq) ct[pid] = c.revokedSeq;
   for (const [fid, v] of Object.entries(st.voided)) {
     const t = tomb[fid] || (tomb[fid] = { approvals: new Set(), versions: new Set() });
     t.approvals.add(v.approvedSeq); t.versions.add(v.version);
@@ -157,6 +161,8 @@ function overlayTombs(st, tomb, seq) {
     if (t && (t.approvals.has(r.approvedSeq) || t.versions.has(r.version))) { st.voided[fid] = { ...r, voidedSeq: seq, reason: 'ya había sido anulado; deshacer no lo revive' }; delete st.approved[fid]; }
   }
   cascade(st, seq); // a tombstoned feeder can invalidate downstream knockouts
+  // T-1109: a consent granted BEFORE a revocation in the raw history can never stand again, whatever the rollback did. Only a new guardian grant (a later seq) plus a new verification counts.
+  const ct = tomb[CONSENT_TOMBS]; if (ct) for (const [pid, c] of Object.entries(st.consents)) if (c.active && ct[pid] > c.grantSeq) { c.active = false; c.verifiedSeq = null; c.revokedSeq = ct[pid]; syncConsent(st, pid); }
   st.tombs = tomb;
 }
 function rewind(log, eff, e, tomb) { const st = foldSeqs(log, seqsOf(eff[e.seq])); overlayTombs(st, tomb, e.seq); recordTombs(st, tomb); return st; }
@@ -428,7 +434,7 @@ function stripMeta(rep) { const { participants, version, by, approvedSeq, ...r }
 
 function checkReport(st, actor, payload) {
   { const f0 = payload && typeof payload.fixtureId === 'string' && has(st.fixtures, payload.fixtureId) ? st.fixtures[payload.fixtureId] : null; if (f0 && f0.stage === 'group' && st.withdrawn && (st.withdrawn[f0.home] || st.withdrawn[f0.away])) return err(409, 'partido_cancelado', 'Ese partido se canceló porque un equipo se retiró.'); }
-  if (!only(payload, ['fixtureId', 'report', 'participants'])) return err(422, 'reporte_invalido');
+  if (!only(payload, ['fixtureId', 'report', 'participants', 'opKey']) || (payload.opKey !== undefined && !(typeof payload.opKey === 'string' && ID.test(payload.opKey)))) return err(422, 'reporte_invalido');
   const f = typeof payload.fixtureId === 'string' && has(st.fixtures, payload.fixtureId) ? st.fixtures[payload.fixtureId] : null;
   if (actor.role === 'arbitro' && (!f || f.refereeId !== actor.id)) return err(403, 'partido_no_asignado');
   if (!f) return err(404, 'partido_desconocido');
@@ -466,7 +472,25 @@ function validateLog(log, key) {
   return { ok: true, length: log.length, head: c.head };
 }
 
-module.exports = { checkEvent, validateLog };
+// T-1109 (TOR-T1106-03): «Publicar» as ONE organizer operation: the report and its approval are written together or not at all. `opKey` makes a retry safe: the same key with the same
+// content answers «already done» without writing; the same key with other content is refused. Returns { reply:{status,body} } or { events, version }; each caller commits with its own commitMany.
+const canon = (v) => (Array.isArray(v) ? '[' + v.map(canon).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}' : JSON.stringify(v));
+function planPublish(log, st, body) {
+  const reply = (status, b) => ({ reply: { status, body: b } });
+  if (!body || !only(body, ['fixtureId', 'report', 'participants', 'opKey']) || typeof body.opKey !== 'string' || !ID.test(body.opKey) || typeof body.fixtureId !== 'string' || !body.participants || !only(body.participants, ['home', 'away']) || typeof body.participants.home !== 'string' || typeof body.participants.away !== 'string') return reply(422, { error: 'cuerpo_invalido' });
+  const prior = log.find((e) => e.type === 'REPORT_SUBMITTED' && e.payload.opKey === body.opKey);
+  if (prior) {
+    if (prior.payload.fixtureId !== body.fixtureId || canon(prior.payload.report) !== canon(body.report)) return reply(409, { error: 'op_repetida', detail: 'Ya se publicó otro marcador con este formulario. Recarga la pantalla.' });
+    const standing = S.view(st).validApproved[body.fixtureId];
+    return standing && standing.version === prior.seq ? reply(200, { version: prior.seq, repeated: true }) : reply(409, { error: 'publicacion_deshecha', detail: 'Ese marcador ya no está publicado. Anótalo de nuevo.' });
+  }
+  const f = has(st.fixtures, body.fixtureId) ? st.fixtures[body.fixtureId] : null; if (!f) return reply(404, { error: 'partido_desconocido' });
+  const cur = S.participantsOf(st, f, S.view(st).bracketById);
+  if (body.participants.home !== cur.home || body.participants.away !== cur.away) return reply(409, { error: 'equipos_cambiaron', detail: 'Cambiaron los equipos de este partido. Anota el resultado de nuevo.' });
+  const version = log.length + 1;
+  return { version, events: [{ type: 'REPORT_SUBMITTED', payload: { fixtureId: body.fixtureId, report: body.report, participants: cur, opKey: body.opKey } }, { type: 'REPORT_APPROVED', payload: { fixtureId: body.fixtureId, version } }] };
+}
+module.exports = { checkEvent, validateLog, planPublish };
 
 };
 defs["/engine/validate"]=function(module,exports,require){'use strict';
@@ -981,7 +1005,17 @@ function checkSchedule(fixtures, groups, rounds) {
   }
   return { ok: true, slots: slots.length, backToBack };
 }
-const api = { generateSchedule, checkSchedule, roundRobin, buildPlan, planFits, planEvents, qualifiersFor };
+// T-1109 (TOR-T1106-05): the knockout needs a saved qualifier count, even when nobody chose rules yet. Saved in the SAME batch, before the matches that draw on it. No rules yet = the July Cup rulebook defaults (3-1-0, straight penalties).
+const DEFAULT_RULES = { points: { win: 3, draw: 1, loss: 0 }, tiebreak: ['won', 'gd', 'gf', 'h2h_result', 'fairplay', 'ga_fewest'], walkoverGoals: 3, koLevel: 'PENS' };
+function withQualifierRule(plan, rules, need) {
+  if (!need) return plan; // group-only shapes
+  const rank = (src) => { const m = /^([1-9])/.exec(src || ''); return m ? Number(m[1]) : 0; };
+  for (const e of plan) if (e.type === 'FIXTURE_ADDED' && e.payload.stage === 'ko' && Math.max(rank(e.payload.homeSource), rank(e.payload.awaySource)) > need) throw new Error(`Ese calendario usa un puesto que no clasifica: solo clasifican ${need} por grupo.`);
+  const r0 = rules || {}; if (r0.points && r0.qualifiersPerGroup === need) return plan;
+  const { preset, ...rest } = r0;
+  return [{ type: 'RULES_SET', payload: { ...DEFAULT_RULES, ...rest, qualifiersPerGroup: need } }, ...plan];
+}
+const api = { generateSchedule, checkSchedule, roundRobin, buildPlan, planFits, planEvents, qualifiersFor, withQualifierRule };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else window.Schedule = api;
 
 };
@@ -990,7 +1024,7 @@ defs["/engine/core"]=function(module,exports,require){'use strict';
 // Used by the in-browser demo (store = localStorage) and by the parity test (store = memory) that compares it with the real server.
 // The real server keeps its own persistence + integrity chain checks; this core covers only the routes the three screens use.
 const S = require('./state');
-const { checkEvent } = require('./rules');
+const { checkEvent, planPublish } = require('./rules');
 const { publicView } = require('./public');
 const { only } = require('./validate');
 const { PRESETS } = require('./presets');
@@ -1051,6 +1085,10 @@ function createCore({ store, tokens, key, now }) {
       const r = commit(log, 'REPORT_SUBMITTED', actor, { fixtureId: body.fixtureId, report: body.report, participants });
       return r.bad ? fail(r.bad) : res(201, { version: r.e.seq });
     }
+    if (pathname === '/api/org/publish') { // T-1109: report + approval as one operation, safe to retry (rules.js planPublish)
+      const plan = planPublish(log, st, body); if (plan.reply) return res(plan.reply.status, plan.reply.body);
+      const r = commitMany(log, actor, plan.events); return r.bad ? fail(r.bad) : res(201, { version: plan.version });
+    }
     if (pathname === '/api/org/event') {
       if (['REPORT_SUBMITTED', 'ROLLBACK', 'SIGN_LINK_ISSUED'].includes(body.type)) return res(422, { error: 'evento_invalido' });
       const r = commit(log, body.type, actor, body.payload); return r.bad ? fail(r.bad) : res(201, { seq: r.e.seq });
@@ -1070,7 +1108,7 @@ function createCore({ store, tokens, key, now }) {
   return { handle };
 }
 // Machine-checked list of the routes the in-browser core implements (everything else is real-mode only: export/import, signing links, family signing).
-const CAPABILITIES = ['GET /api/public', 'GET /api/ref/fixtures', 'GET /api/org/state', 'GET /api/org/presets', 'POST /api/org/event', 'POST /api/org/report', 'POST /api/ref/report', 'POST /api/org/rollback', 'POST /api/org/rollback/preview', 'POST /api/org/batch'];
+const CAPABILITIES = ['GET /api/public', 'GET /api/ref/fixtures', 'GET /api/org/state', 'GET /api/org/presets', 'POST /api/org/event', 'POST /api/org/report', 'POST /api/org/publish', 'POST /api/ref/report', 'POST /api/org/rollback', 'POST /api/org/rollback/preview', 'POST /api/org/batch'];
 module.exports = { createCore, CAPABILITIES };
 
 };
@@ -1079,7 +1117,7 @@ defs["/engine/flags"]=function(module,exports,require){module.exports={MEDIA:tru
 defs["/engine/media"]=function(module,exports,require){'use strict';
 // PUBLIC MEDIA (videos/albums linked to matches). DISABLED BY DESIGN in every public build (engine/flags.js: MEDIA=false unless the build flag TOS_MEDIA=1).
 // Decision 2026-11-04 (TORNEO R8): children's media needs its own consent design and the founder's call (see CONSENTIMIENTO-MEDIA-PLAN.md). T-1106 (founder, 2026-11-06): ON for the adult Nov 21 event, links only. Reviewed rounds R6/R7 found three consent P0s
-// (rollback re-publishes revoked consent; `people:'ninguno'` + URL text bypass; ICC metadata). THIS CODE IS KNOWN-UNSAFE: do not enable it for a real event.
+// (rollback re-publishes revoked consent; `people:'ninguno'` + URL text bypass; ICC metadata). T-1109 closed the first two: `ninguno` is no bypass and a rollback never restores a revoked consent (see mediaGate and state.js overlayTombs). Photo metadata stays the organizer's job: links only, no upload.
 function events({ only, ID, isInt }) {
 // Media links (Night 7): closed-list URLs. https only, a known host (or its subdomain), no credentials, bounded length. Videos come from Veo/YouTube links, albums from shared-album links.
 const VIDEO_HOSTS = ['veo.co', 'veo.com', 'youtube.com', 'youtu.be'], ALBUM_HOSTS = ['icloud.com', 'photos.app.goo.gl', 'photos.google.com', 'drive.google.com', 'dropbox.com', 'flickr.com', 'veo.co', 'veo.com'];
@@ -1101,6 +1139,7 @@ function check(st, type, p, has, err) {
   if (type === 'VIDEO_LINKED' || type === 'ALBUM_LINKED') { // Night 7: media is linked to an existing match; ids are unique per kind
     const pool = type === 'VIDEO_LINKED' ? (st.videos || {}) : (st.albums || {}); if (has(pool, p.id)) return err(409, 'id_repetido');
     if (p.fixtureId !== undefined && !has(st.fixtures, p.fixtureId)) return err(404, 'partido_desconocido');
+    if (p.fixtureId !== undefined && st.fixtures[p.fixtureId].stage === 'ko') { const S = require('./state'), c = S.participantsOf(st, st.fixtures[p.fixtureId], S.view(st).bracketById); if (!c.home || !c.away) return err(409, 'partido_sin_equipos', 'Este partido todavía no tiene equipos. Agrega el enlace cuando se sepa quién juega.'); }
     if (p.people !== 'ninguno') { for (const t of p.people.teams || []) if (!has(st.teams, t)) return err(404, 'equipo_desconocido'); for (const x of p.people.players || []) if (!has(st.players, x)) return err(404, 'jugador_desconocido'); }
   }
   if (type === 'VIDEO_UNLINKED' && !has(st.videos || {}, p.id)) return err(404, 'video_desconocido');
@@ -1117,19 +1156,26 @@ function apply(st, e) {
     default: break;
   }
 }
-// R6-01: may this media item be PUBLIC right now? 'ninguno' (Dad attests nobody identifiable) → yes. Otherwise every MINOR who appears (named players + whole rosters of named teams)
-// needs an ACTIVE, organizer-VERIFIED consent whose scope includes `scope` ('video' | 'foto'). Computed from the CURRENT state, so a revoked consent hides the item at once.
-function mediaGate(st, item, scope) {
-  if (item.people === 'ninguno') return { visible: true, missing: [] };
-  const ids = new Set(item.people.players || []); for (const t of item.people.teams || []) for (const pl of Object.values(st.players)) if (pl.teamId === t) ids.add(pl.id);
+// T-1109 (TOR-T1106-01, P0): may this media item be PUBLIC right now? Who it could show is decided by the SERVER, not by a label typed in a form:
+// the declared people, PLUS both teams actually playing the match (knockout: from the bracket, today), or, for an album of no match, everybody on a roster. `ninguno` is NOT a bypass (it only stays valid so old histories still replay).
+// Every MINOR in that set needs an ACTIVE, organizer-VERIFIED consent whose scope includes `scope` ('video' | 'foto'). A knockout with no teams yet, or a roster with nobody on it, stays hidden: nothing is shown on a guess.
+// Computed from the CURRENT state, so a revoked consent hides the item at once; rollback keeps it hidden (state.js overlayTombs).
+function mediaGate(st, item, scope, bracketById) {
+  const roster = (t) => Object.values(st.players).filter((pl) => pl.teamId === t).map((pl) => pl.id);
+  const ids = new Set(); if (item.people !== 'ninguno') { for (const x of item.people.players || []) ids.add(x); for (const t of item.people.teams || []) roster(t).forEach((x) => ids.add(x)); }
+  let unresolved = false;
+  if (item.fixtureId) { const f = st.fixtures[item.fixtureId];
+    if (!f) unresolved = true;
+    else { const S = require('./state'), c = S.participantsOf(st, f, bracketById || S.view(st).bracketById); if (!c.home || !c.away) unresolved = true; else { roster(c.home).forEach((x) => ids.add(x)); roster(c.away).forEach((x) => ids.add(x)); } }
+  } else Object.keys(st.players).forEach((x) => ids.add(x));
   const missing = [...ids].filter((id) => { const pl = st.players[id]; if (!pl || !pl.isMinor) return false; const c = st.consents[id]; return !(c && c.active && c.verifiedSeq && c.scope.includes(scope)); });
-  return { visible: ids.size > 0 && missing.length === 0, missing };
+  return { visible: !unresolved && ids.size > 0 && missing.length === 0, missing, ...(unresolved ? { unresolved: true } : {}), ...(!unresolved && ids.size === 0 ? { noRoster: true } : {}) };
 }
-
-function decorate(st) { for (const x of Object.values(st.videos || {})) x.gate = mediaGate(st, x, 'video'); for (const x of Object.values(st.albums || {})) x.gate = mediaGate(st, x, 'foto'); }
-function project(st) {
-  return { videos: Object.values(st.videos || {}).filter((x) => mediaGate(st, x, 'video').visible).map((x) => ({ id: x.id, fixtureId: x.fixtureId, url: x.url, duration: x.duration })),
-    albums: Object.values(st.albums || {}).filter((x) => mediaGate(st, x, 'foto').visible).map((x) => ({ id: x.id, kind: x.kind, url: x.url, count: x.count, fixtureId: x.fixtureId })) };
+const bracketOf = (st) => require('./state').view(st).bracketById;
+function decorate(st) { const b = bracketOf(st); for (const x of Object.values(st.videos || {})) x.gate = mediaGate(st, x, 'video', b); for (const x of Object.values(st.albums || {})) x.gate = mediaGate(st, x, 'foto', b); }
+function project(st) { const b = bracketOf(st);
+  return { videos: Object.values(st.videos || {}).filter((x) => mediaGate(st, x, 'video', b).visible).map((x) => ({ id: x.id, fixtureId: x.fixtureId, url: x.url, duration: x.duration })),
+    albums: Object.values(st.albums || {}).filter((x) => mediaGate(st, x, 'foto', b).visible).map((x) => ({ id: x.id, kind: x.kind, url: x.url, count: x.count, fixtureId: x.fixtureId })) };
 }
 module.exports = { events, check, apply, decorate, project, mediaGate };
 

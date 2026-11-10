@@ -1,7 +1,7 @@
 'use strict';
 document.body.classList.add('role-papa'); // Papá's screens have their own look (navy + gold), see app.css
 const main = document.getElementById('main');
-let TOKEN = sessionStorage.getItem('org') || null, ST = null, TAB = 'cola', NOTE = null, SCHED = null, PLAN = null, SHEET = null; // SHEET: the match whose referee sheet Dad is typing (T-1106)
+let TOKEN = sessionStorage.getItem('org') || null, ST = null, TAB = 'cola', NOTE = null, SCHED = null, PLAN = null, SHEET = null, SHEETBUSY = false; // SHEET: the match whose referee sheet Dad is typing (T-1106)
 const LINKS = {}; // signing links are shown once, kept only in this page's memory
 const dayShort = (k) => new Date(k.slice(0, 10) + 'T12:00').toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' });
 const rid = (p) => p + Math.random().toString(36).slice(2, 8);
@@ -19,7 +19,7 @@ async function refresh() {
   render();
 }
 let NOTE_TIMER = null;
-async function act(fn, ok) { try { await fn(); note('ok', ok); } catch (e) { if (e.soft) NOTE = null; else note('bad', 'No se guardó: ' + e.message); } await refresh();
+async function act(fn, ok) { try { await fn(); note('ok', ok); } catch (e) { if (e.soft) NOTE = null; else if (e.warn) note('warn', e.message); else note('bad', 'No se guardó: ' + e.message); } await refresh();
   if (NOTE && NOTE.kind === 'ok') { window.scrollTo(0, 0); const mine = NOTE; clearTimeout(NOTE_TIMER); NOTE_TIMER = setTimeout(() => { if (NOTE === mine) { NOTE = null; render(); } }, 6000); } }
 function card(title, ...kids) { return el('div', { class: 'card' }, el('h2', {}, title), el('div', { class: 'pad' }, ...kids)); }
 function field(id, labelText, attrs) { return [el('label', { for: id }, labelText), el('input', { id, ...attrs })]; }
@@ -53,9 +53,8 @@ const TABS = {
     // ONE atomic save: either the whole calendar exists or nothing was created.
     const build = () => act(async () => {
       const plan = Schedule.planEvents(groups, opts);
-      // T-1106: the knockout decides how many go through per group (quarterfinals: 4 of 2 groups or 2 of 4). The rule is saved in the SAME batch, before the matches that draw on it.
-      const r0 = s.rules || {}, need = fit.qualifiers;
-      if (need && r0.points && r0.qualifiersPerGroup !== need) { const { preset, ...rest } = r0; plan.unshift({ type: 'RULES_SET', payload: { ...rest, qualifiersPerGroup: need } }); }
+      // T-1106/T-1109: the knockout decides how many go through per group. The rule is saved in the SAME batch, before the matches that draw on it, even when no rules were chosen yet.
+      plan.splice(0, plan.length, ...Schedule.withQualifierRule(plan, s.rules, fit.qualifiers));
       try { await call('POST', '/api/org/batch', { events: plan.map((e) => ({ type: e.type, payload: e.payload })) }); }
       catch (e) { // lost answer: the calendar may have been saved. Look before saying it failed.
         if (e.status) throw e;
@@ -69,6 +68,7 @@ const TABS = {
       ...sel('pd', '¿Cuánto dura cada partido? (2 tiempos de 40 + descanso de 10 = 1 h 30)', [[45, '45 min'], [60, '1 hora'], [75, '1 h 15'], [90, '1 h 30'], [100, '1 h 40']], O.slot, 'slot', true),
       ...sel('pk', '¿Desde dónde es la eliminatoria?', [['cuartos', 'Cuartos de final'], ['semis', 'Semifinales']], O.ko, 'ko', false),
       ...sel('pr', '¿Cuántas veces juega cada equipo contra los demás de su grupo?', [[1, '1 vez (una vuelta)'], [2, '2 veces (ida y vuelta)']], O.rounds, 'rounds', true),
+      fit.ok && !(s.rules && s.rules.points) ? el('p', { class: 'meta', id: 'planRulesNote' }, 'Aún no hay reglas: se usarán las del torneo de julio (3-1-0, empate en eliminatoria a penales). Puedes cambiarlas en «Reglas» antes de los partidos.') : null,
       fit.ok ? el('div', { class: 'banner ok', id: 'planInfo' }, `${fit.matches} partidos · el último a las ${fit.endsAt12} · ${fit.note}`) : el('div', { class: 'banner warn', id: 'planWarn', 'data-nofit': '1' }, fit.message),
       el('button', { class: 'btn big', id: 'buildPlan', ...(fit.ok ? {} : { disabled: 'disabled' }), onclick: build }, 'Armar el calendario')));
   },
@@ -80,19 +80,22 @@ const TABS = {
     const step = (key, label) => el('div', { class: 'rcol' }, el('div', { class: 'rname' }, label), el('div', { class: 'stepper v' },
       el('button', { 'aria-label': 'menos ' + label, 'data-sminus': key, onclick: () => { SHEET[key] = Math.max(0, SHEET[key] - 1); render(); } }, '−'), el('output', { id: 'sv-' + key }, SHEET[key]),
       el('button', { 'aria-label': 'más ' + label, 'data-splus': key, onclick: () => { SHEET[key] = Math.min(99, SHEET[key] + 1); render(); } }, '+')));
-    const needPens = ko && tie && (ST.state.rules || {}).koLevel === 'PENS';
-    const publish = () => act(async () => {
-      const report = { hg: SHEET.hg, ag: SHEET.ag, ...(needPens ? { pens: { hg: SHEET.ph, ag: SHEET.pa } } : {}) };
-      if (needPens && SHEET.ph === SHEET.pa) throw new Error('los penales no pueden quedar empatados');
-      const r = await call('POST', '/api/org/report', { fixtureId: f.id, report, participants: { home: p.home, away: p.away } });
-      await ev('REPORT_APPROVED', { fixtureId: f.id, version: r.version }); SHEET = null;
-    }, `Publicado: ${nm(p.home)} ${SHEET.hg}–${SHEET.ag} ${nm(p.away)}. La tabla ya se actualizó.`);
+    const koLevel = (ST.state.rules || {}).koLevel || 'PENDIENTE', { needEt, needPens, report, error } = L.sheetReport(f.stage, koLevel, SHEET);
+    // T-1109: one operation on the server (report + approval together), safe to tap twice or retry on a lost answer: the same opKey never writes twice.
+    const publish = () => { if (SHEETBUSY) return; if (error) { note('warn', error); return render(); } SHEETBUSY = true; render();
+      return act(async () => {
+        try { await call('POST', '/api/org/publish', { fixtureId: f.id, report, participants: { home: p.home, away: p.away }, opKey: SHEET.op }); }
+        catch (e) { if (e.status) throw e; throw Object.assign(new Error('Se perdió la conexión y no sabemos si se publicó. Toca «Publicar» otra vez: no se publica dos veces.'), { warn: true }); }
+        SHEET = null;
+      }, `Publicado: ${nm(p.home)} ${SHEET.hg}–${SHEET.ag} ${nm(p.away)}. La tabla ya se actualizó.`).finally(() => { SHEETBUSY = false; render(); }); };
     return el('div', { class: 'card qcard refForm', id: 'sheetCard' }, el('h2', {}, 'Marcador de la hoja del árbitro'), el('div', { class: 'pad' },
       el('p', { class: 'meta' }, [L.title(ST, f), f.kickoff ? L.t12(f.kickoff) : '', f.pitch].filter(Boolean).join(' · ')),
       el('div', { class: 'rgrid' }, step('hg', nm(p.home)), step('ag', nm(p.away))),
-      needPens ? el('div', {}, el('div', { class: 'step' }, 'Empate: penales'), el('div', { class: 'rgrid' }, step('ph', 'Penales ' + nm(p.home)), step('pa', 'Penales ' + nm(p.away)))) : null,
+      needEt ? el('div', { id: 'sheetEt' }, el('div', { class: 'step' }, 'Empate: goles en la prórroga'), el('div', { class: 'rgrid' }, step('eh', 'Prórroga ' + nm(p.home)), step('ea', 'Prórroga ' + nm(p.away)))) : null,
+      needPens ? el('div', { id: 'sheetPens' }, el('div', { class: 'step' }, needEt ? 'Sigue el empate: penales' : 'Empate: penales'), el('div', { class: 'rgrid' }, step('ph', 'Penales ' + nm(p.home)), step('pa', 'Penales ' + nm(p.away)))) : null,
+      error && koLevel === 'PENDIENTE' ? el('div', { class: 'banner warn', id: 'sheetRule' }, error) : null,
       el('p', { class: 'meta' }, 'Al publicar, todos lo ven en el link y la tabla se actualiza sola.'),
-      el('button', { class: 'btn big', id: 'sheetPublish', onclick: publish }, `Publicar ${SHEET.hg}–${SHEET.ag}`),
+      el('button', { class: 'btn big', id: 'sheetPublish', ...(SHEETBUSY ? { disabled: 'disabled', 'aria-busy': 'true' } : {}), onclick: publish }, SHEETBUSY ? 'Publicando…' : `Publicar ${SHEET.hg}–${SHEET.ag}`),
       el('button', { class: 'linkbtn', id: 'sheetCancel', onclick: () => { SHEET = null; render(); } }, 'Cancelar')));
   },
   cola() {
@@ -124,7 +127,7 @@ const TABS = {
     const out = [el('div', { class: 'card', id: 'dayCard' }, el('h2', {}, 'El día'), el('div', { class: 'pad' }, el('div', { class: 'dayN' }, `${pr.done} de ${pr.total} partidos listos`), el('div', { class: 'bar2', role: 'img', 'aria-label': pct + '% listo' }, el('span', { class: 'fill w' + Math.round(pct / 5) * 5 })), ))];
     if (next.length) out.push(el('div', { class: 'card', id: 'nextCard' }, el('h2', {}, 'Siguen'), next.map((f) => { const p = L.participants(ST, f), ready = p.home && p.away;
       return el('div', { class: 'row' }, el('div', { class: 'team' }, L.title(ST, f), el('div', { class: 'meta' }, [f.kickoff ? L.t12(f.kickoff) : 'sin hora', f.pitch].filter(Boolean).join(' · '))),
-        ready ? el('button', { class: 'btn inline', 'data-sheet': f.id, onclick: () => { SHEET = { id: f.id, hg: 0, ag: 0, ph: 0, pa: 0 }; render(); window.scrollTo(0, 0); } }, 'Anotar') : null); })));
+        ready ? el('button', { class: 'btn inline', 'data-sheet': f.id, onclick: () => { SHEET = { id: f.id, hg: 0, ag: 0, eh: 0, ea: 0, ph: 0, pa: 0, op: rid('s') }; render(); window.scrollTo(0, 0); } }, 'Anotar') : null); })));
     if (last.length) out.push(el('div', { class: 'card', id: 'lastCard' }, el('h2', {}, 'Ya terminaron'), last.map((f) => { const r = ST.view.validApproved[f.id]; return el('div', { class: 'row' }, el('div', { class: 'team' }, L.title(ST, f)), el('div', { class: 'score' }, `${r.hg} – ${r.ag}`)); })));
     return out;
   },
@@ -360,8 +363,8 @@ const TABS = {
         el('button', { class: 'btn sec', id: 'rollback', onclick: async () => { // R8-02: the impact is computed by the SERVER from the real event graph (setup, results, schedule, permissions), then the organizer confirms with the head he saw
         const to = Number(val('to')), why = val('rwhy'); let imp; try { imp = await call('POST', '/api/org/rollback/preview', { toSeq: to }); } catch (e) { note('bad', 'No se pudo calcular qué se deshace: ' + e.message); return render(); }
         const describe = (items, summary) => (summary.map((x) => x.text).join(', ') || 'nada') + '\n' + items.map((x) => '• ' + x.label).join('\n');
-        const returns = imp.restoring.some((x) => ['setup', 'result', 'consent'].includes(x.kind));
-        const msg = `Esto vuelve TODO el torneo al evento #${to}. SE DESACTIVA: ${describe(imp.leaving, imp.summary)}\n\nVUELVE: ${describe(imp.restoring, imp.restoringSummary)}${imp.deletesSetup ? '\n\n⚠ Se desactiva parte del montaje del torneo.' : ''}${returns ? '\n\n⚠ Vuelven equipos, partidos, reglas, resultados o permisos y firmas indicados arriba.' : ''}\n\nPara deshacer solo un cambio de lugar usa el botón de ese cambio en Historial. ¿Seguro?`;
+        const returns = imp.restoring.some((x) => ['setup', 'result', 'consent'].includes(x.kind)), kept = imp.revocationsKept ? `\n\n⚠ ${imp.revocationsKept === 1 ? '1 permiso retirado sigue retirado' : imp.revocationsKept + ' permisos retirados siguen retirados'}: deshacer no los devuelve. Hace falta un permiso nuevo de la familia.` : '';
+        const msg = `Esto vuelve TODO el torneo al evento #${to}. SE DESACTIVA: ${describe(imp.leaving, imp.summary)}\n\nVUELVE: ${describe(imp.restoring, imp.restoringSummary)}${imp.deletesSetup ? '\n\n⚠ Se desactiva parte del montaje del torneo.' : ''}${returns ? '\n\n⚠ Vuelven equipos, partidos, reglas, resultados o permisos y firmas indicados arriba.' : ''}${kept}\n\nPara deshacer solo un cambio de lugar usa el botón de ese cambio en Historial. ¿Seguro?`;
         if ((!imp.leaving.length && !imp.restoring.length) || !window.confirm(msg)) return;
         act(() => call('POST', '/api/org/rollback', { toSeq: to, reason: why, expectSeq: imp.head }), 'Deshecho.'); } }, 'Deshacer'))];
   },

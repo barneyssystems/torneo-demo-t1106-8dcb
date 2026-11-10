@@ -326,3 +326,6 @@ a.vitem.vfeatlink,div.vitem.vfeatlink{display:block;padding:0;border:0;min-heigh
 @font-face{font-family:'Barlow Condensed';font-style:italic;font-weight:800;font-display:swap;src:url(barlow-condensed-800i.ttf) format('truetype')}
 .vthumb{background:#14182b}.vfeat{background:#0a0a0c}.vthumb .play::after{border-left-color:#0a0a0c}.vchip{color:var(--accent)}
 nav.tabs{z-index:30}
+.demoTag{display:block;margin-top:4px;font-size:12px;font-weight:700;color:var(--gold2)}.vtx .demoTag{color:#8a6a10}.vfeat .vtx .demoTag{color:var(--gold2)}
+.kick .kbtns{display:flex;flex-direction:column;gap:6px}.kick .pause{background:#2a3050;color:#fff}.kick .go.kmini{padding:0 14px}
+.srOnly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}

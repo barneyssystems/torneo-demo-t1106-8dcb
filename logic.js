@@ -101,6 +101,28 @@
     const fin = (d.fixtures || []).find((f) => f.round === 'Final'); if (!fin) return null;
     const b = (d.bracket || []).find((x) => x.id === fin.id); return b && b.result && b.winner ? { state: 'champion', team: b.winner } : { state: 'pending' };
   }
-  const api = { champion, swapProblems, publicState, nextMatch, t12, busyTimes, isCancelled: cancelled, dayProgress, pendingQueue, scheduleConflicts, scheduleBySlot, title, participants };
+  // T-1109: the organizer's paper-sheet form. Asks only what the knockout rule needs; never claims a result the engine would refuse.
+  function sheetReport(stage, koLevel, s) {
+    const tie = s.hg === s.ag, ko = stage === 'ko', needEt = ko && tie && koLevel === 'ET_THEN_PENS', needPens = ko && tie && (koLevel === 'PENS' || (needEt && s.eh === s.ea));
+    const report = { hg: s.hg, ag: s.ag, ...(needEt ? { et: { hg: s.eh, ag: s.ea } } : {}), ...(needPens ? { pens: { hg: s.ph, ag: s.pa } } : {}) };
+    let error = null;
+    if (ko && tie && koLevel === 'PENDIENTE') error = 'Sin regla de desempate no se puede publicar un empate. Define la regla en «Reglas».';
+    else if (needPens && s.ph === s.pa) error = 'Los penales no pueden quedar empatados.';
+    return { needEt, needPens, report, error };
+  }
+  // T-1109: the score that ended the match (extra-time goals are stored apart) and the timeline's closing marks, in real order.
+  const finalScore = (r) => ({ hg: r.hg + (r.et ? r.et.hg : 0), ag: r.ag + (r.et ? r.et.ag : 0) });
+  function timelineMarks(r) {
+    const fs = finalScore(r), out = [];
+    if (r.et) out.push(`Tiempo reglamentario ${r.hg}–${r.ag}`, `Prórroga ${r.et.hg}–${r.et.ag}`);
+    out.push(`Final ${fs.hg}–${fs.ag}`);
+    if (r.pens) out.push(`Penales ${r.pens.hg}–${r.pens.ag}`);
+    return out;
+  }
+  // T-1109: the referee's clock counts only playing time: { t0, pauses: [{ from, to? }], end? }. Halftime and stoppages are pauses.
+  function clockPlayedMs(k, now) { const stop = k.end || now; let ms = stop - k.t0; for (const p of k.pauses || []) ms -= Math.max(0, Math.min(p.to || stop, stop) - p.from); return Math.max(0, ms); }
+  const clockMin = (k, now) => Math.max(1, Math.floor(clockPlayedMs(k, now) / 60000) + 1);
+  const clockPaused = (k) => (k.pauses || []).some((p) => !p.to);
+  const api = { sheetReport, finalScore, timelineMarks, clockMin, clockPaused, champion, swapProblems, publicState, nextMatch, t12, busyTimes, isCancelled: cancelled, dayProgress, pendingQueue, scheduleConflicts, scheduleBySlot, title, participants };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.L = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -2,8 +2,9 @@
 // Demo mode: every /api/* call is answered inside this browser by the same engine (engine/core.js) over localStorage. No server, no accounts.
 (function () {
   const E = window.TosEngine; // R8-03: the stored demo history is keyed by media mode; an OFF build removes older logs (v1 and any media-mode log) so no provider URL stays in this browser
-  const KEY = 'tos-demo-log-v2-' + (E.flags && E.flags.MEDIA ? 'media' : 'cup-qf-off'); // «cup»: the Foundation Cup identity; older stored demos (named «Torneo de prueba») are dropped
-  if (!(E.flags && E.flags.MEDIA)) { try { localStorage.removeItem('tos-demo-log-v1'); localStorage.removeItem('tos-demo-log-v2-media'); localStorage.removeItem('tos-demo-log-v2-off'); localStorage.removeItem('tos-demo-log-v2-cup-off'); } catch { /* storage unavailable */ } }
+  const KEY = 'tos-demo-log-v2-' + (E.flags && E.flags.MEDIA ? 'media-t1109' : 'cup-qf-off'); // T-1109: new key, so a phone that opened the older demo starts clean // «cup»: the Foundation Cup identity; older stored demos (named «Torneo de prueba») are dropped
+  try { localStorage.removeItem('tos-demo-log-v1'); localStorage.removeItem('tos-demo-log-v2-media'); localStorage.removeItem('tos-demo-log-v2-off'); localStorage.removeItem('tos-demo-log-v2-cup-off'); if (!(E.flags && E.flags.MEDIA)) localStorage.removeItem('tos-demo-log-v2-media-t1109'); } catch { /* storage unavailable */ }
+  if (!localStorage.getItem(KEY)) { try { for (const k of Object.keys(localStorage)) if (/^(tos-kick-|refQueue:|refFixtures:|refRecover)/.test(k)) localStorage.removeItem(k); } catch { /* storage unavailable */ } } // T-1109: a new seed reuses the old fixture ids, so a clock or queue left by the old demo must not touch it
   const TOKENS = { 'DEMO-ORG': { role: 'organizador', id: 'org1' }, 'DEMO-REF1': { role: 'arbitro', id: 'ref1' }, 'DEMO-REF2': { role: 'arbitro', id: 'ref2' }, 'DEMO-REF3': { role: 'arbitro', id: 'ref3' } };
   const SECRET = 'demo-only-not-a-secret';
   const store = { load() { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; } }, save(l) { localStorage.setItem(KEY, JSON.stringify(l)); } };

@@ -50,15 +50,18 @@ const nice = (k) => { if (!k) return ''; const d = new Date(k.slice(0, 10) + 'T1
 const KICK = 'tos-kick-';
 function kickGet(id) { try { const k = JSON.parse(localStorage.getItem(KICK + id) || 'null'); return k && Number.isFinite(k.t0) ? k : null; } catch { return null; } }
 function kickSet(id, k) { try { k ? localStorage.setItem(KICK + id, JSON.stringify(k)) : localStorage.removeItem(KICK + id); } catch { /* storage full or blocked: the form still works without the clock */ } }
-const kickMin = (k, now) => Math.max(1, Math.floor(((k.end || now) - k.t0) / 60000) + 1);
+const kickMin = (k, now) => L.clockMin(k, now); // T-1109 (TOR-T1106-08): only playing time counts: halftime and stoppages are pauses
 function kickRunning(id) { const k = kickGet(id); return k && !k.end ? String(Math.min(130, kickMin(k, Date.now()))) : ''; }
 function kickBox(f) {
   const k = kickGet(f.id);
   if (!k) return el('div', { class: 'kick', id: 'kick' }, el('div', { class: 'kmeta' }, el('b', {}, '¿Listos?'), 'El reloj corre en este teléfono y pone el minuto de cada gol.'),
     el('button', { class: 'go', id: 'kickGo', onclick: () => { kickSet(f.id, { t0: Date.now() }); render(); } }, '▶ Iniciar partido'));
-  if (!k.end) return el('div', { class: 'kick', id: 'kick', 'data-running': '1' }, el('span', { class: 'clk', id: 'kickClk' }, Math.min(130, kickMin(k, Date.now())) + "'"),
-    el('div', { class: 'kmeta' }, el('b', {}, 'En juego'), 'Toca + cuando haya gol.'),
-    el('button', { class: 'stop', id: 'kickEnd', onclick: () => { if (window.confirm('¿Terminar el partido? Después revisas y envías el resultado.')) { kickSet(f.id, { ...k, end: Date.now() }); render(); const b = document.getElementById('send'); if (b) b.scrollIntoView({ block: 'center' }); } } }, 'Terminar'));
+  if (!k.end) { const paused = L.clockPaused(k), setP = (fn) => { kickSet(f.id, { ...k, pauses: fn(k.pauses || []) }); render(); };
+    return el('div', { class: 'kick', id: 'kick', 'data-running': paused ? '0' : '1', 'data-paused': paused ? '1' : '0' }, el('span', { class: 'clk', id: 'kickClk' }, Math.min(130, kickMin(k, Date.now())) + "'"),
+    el('div', { class: 'kmeta' }, el('b', {}, paused ? 'En pausa' : 'En juego'), paused ? 'El reloj está parado. Toca Reanudar para seguir.' : 'Toca + cuando haya gol. En el descanso, toca Pausa.'),
+    el('div', { class: 'kbtns' },
+      paused ? el('button', { class: 'go kmini', id: 'kickResume', onclick: () => setP((ps) => ps.map((x) => (x.to ? x : { ...x, to: Date.now() }))) }, '▶ Reanudar') : el('button', { class: 'pause', id: 'kickPause', onclick: () => setP((ps) => [...ps, { from: Date.now() }]) }, '⏸ Pausa'),
+      el('button', { class: 'stop', id: 'kickEnd', onclick: () => { if (window.confirm('¿Terminar el partido? Después revisas y envías el resultado.')) { kickSet(f.id, { ...k, end: Date.now() }); render(); const b = document.getElementById('send'); if (b) b.scrollIntoView({ block: 'center' }); } } }, 'Terminar'))); }
   return el('div', { class: 'kick done', id: 'kick' }, el('span', { class: 'clk' }, 'Final'), el('div', { class: 'kmeta' }, el('b', {}, `Jugado: ${kickMin(k)} min`), 'Revisa el marcador y envíalo.'));
 }
 setInterval(() => { const c = document.getElementById('kickClk'); if (c && OPEN) c.textContent = kickRunning(OPEN) + "'"; }, 5000);
