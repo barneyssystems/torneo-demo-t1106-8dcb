@@ -34,12 +34,13 @@ TABS.medios = function () {
     const upPhotos = () => guard(async () => { const inp = document.getElementById('aFiles'), files = inp && inp.files ? [...inp.files] : [];
       if (DEMO) throw new Error('En la demostración no se suben fotos. Los álbumes de ejemplo ya se abren dentro de la app, con la marca del torneo.');
       if (!files.length) throw new Error('Elige las fotos.'); if (files.length > 60) throw new Error('Máximo 60 fotos por álbum. Haz dos álbumes.');
-      const pc = people(), b = document.getElementById('upFotos'), urls = [], tname = (s.tournament && s.tournament.name) || 'Torneo';
+      const pc = people(), b = document.getElementById('upFotos'), urls = [], lote = [...crypto.getRandomValues(new Uint8Array(8))].map((x) => x.toString(16).padStart(2, '0')).join(''), tname = (s.tournament && s.tournament.name) || 'Torneo';
       try { for (let i = 0; i < files.length; i++) { if (b) { b.disabled = true; b.textContent = `Subiendo ${i + 1} de ${files.length}… no cierres esta pantalla`; }
           let blob; try { blob = await window.TosMarca.prepare(files[i], tname); } catch { throw new Error(`La foto ${i + 1} no se pudo abrir. Elige fotos JPG o del carrete del teléfono.`); }
-          const r = await fetch('/api/org/foto', { method: 'POST', headers: { authorization: 'Bearer ' + TOKEN, 'content-type': 'image/jpeg' }, body: blob }); const j = await r.json().catch(() => ({}));
+          const r = await fetch('/api/org/foto?lote=' + lote, { method: 'POST', headers: { authorization: 'Bearer ' + TOKEN, 'content-type': 'image/jpeg' }, body: blob }); const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(`Foto ${i + 1}: ` + (j.detail || 'no se pudo subir. Revisa la señal y vuelve a intentar.')); urls.push(j.url); }
         await ev('ALBUM_LINKED', { id: 'al' + Date.now().toString(36), kind: MED.kind, photos: urls, people: pc, ...(MED.fx ? { fixtureId: MED.fx } : {}) });
+      } catch (e) { fetch('/api/org/foto/abortar?lote=' + lote, { method: 'POST', headers: { authorization: 'Bearer ' + TOKEN } }).catch(() => {}); throw e; // TOR-T1110F-03: nothing half-uploaded stays behind
       } finally { if (b) { b.disabled = false; b.textContent = 'Subir las fotos'; } } }, 'Subidas con la marca del torneo. Se ven dentro de la app si el álbum quedó público (mira abajo).');
     out.push(card('3 · Álbum de fotos (se abre dentro de la app)', el('p', { class: 'meta' }, DEMO ? 'En la demostración no se suben fotos: los álbumes de ejemplo ya se abren dentro de la app, con la marca del torneo.' : 'Elige hasta 60 fotos. Este teléfono les pone la marca del torneo (escudo y nombre) y les quita la ubicación y los datos ocultos antes de subirlas. Las familias las ven dentro de la app, en «Fotos» y en la página del partido.'),
       chips('aKind', KIND, MED.kind, (v) => { MED.kind = v; render(); }, 'Tipo de álbum'),
