@@ -148,6 +148,10 @@ function render() {
     }
     if (NOTE && NOTE.kind !== 'ok') kids.push(el('div', { class: 'pad' }, el('div', { class: 'banner ' + NOTE.kind, role: 'alert', id: 'noteNear', 'data-kind': NOTE.kind }, NOTE.text)));
     { const miss = ['h', 'a'].reduce((n, sd) => n + DRAFT.gl[sd].filter((g) => !g.p).length, 0); if (!DRAFT.wo && DRAFT.hg + DRAFT.ag > 0 && miss > 0) kids.push(el('div', { class: 'pad' }, el('p', { class: 'meta', id: 'missNudge' }, `Faltan ${miss} goleador${miss > 1 ? 'es' : ''} (opcional).`))); }
+    // R111 (Dad's note): an OPTIONAL written report. Only the organizer reads it; families never see it.
+    kids.push(el('div', { class: 'pad refNoteBox' }, el('label', { for: 'refNote', class: 'step' }, 'Informe escrito (opcional)'),
+      el('p', { class: 'meta', id: 'refNoteHelp' }, 'Lo que pasó: incidentes, tarjetas, reclamos. Solo lo ve el organizador.'),
+      el('textarea', { id: 'refNote', rows: '4', maxlength: '1000', 'aria-describedby': 'refNoteHelp', placeholder: 'Ej.: min 70, expulsé al #10 por pelea.', oninput: (e) => { DRAFT.note = e.target.value; } }, DRAFT.note || '')));
     kids.push(el('div', { class: 'sendBar' }, el('p', { class: 'meta' }, 'Al enviar, el organizador lo aprueba antes de que sea público.'),
       el('button', { class: 'btn', id: 'send', onclick: async () => {
         if (SENDING) return; SENDING = true; try {
@@ -164,6 +168,7 @@ function render() {
           if (needPens) report.pens = { hg: DRAFT.ph, ag: DRAFT.pa };
           if (DRAFT.cards !== null) { report.cards = DRAFT.cards.map(({ number, ...c }) => c); const inv = ['h', 'a'].filter((x) => DRAFT.inv[x]); if (inv.length) report.invasion = inv; }
         }
+        { const nt = String(DRAFT.note || '').replace(/\r\n?/g, '\n').split('\n').map((ln) => ln.replace(/[\p{Bidi_Control}\p{Cc}]/gu, '')).join('\n').trim(); if (nt) report.note = [...nt].slice(0, 1000).join('').trim(); }
         const snap = { home: f.home.id, away: f.away.id };
         try { await call('POST', '/api/ref/report', { fixtureId: f.id, report, participants: snap }); kickSet(f.id, null); NOTE = { kind: 'ok', fixtureId: f.id, text: `✓ Enviado: ${f.home.name} ${scoreText(report)} ${f.away.name}. Falta la aprobación del organizador.` }; OPEN = null; }
         catch (e) {
@@ -178,7 +183,7 @@ function render() {
   }
   const list = FX.length ? FX.slice().sort((a, b) => (a.kickoff || 'z').localeCompare(b.kickoff || 'z')).map((f) => el('div', { class: 'row', 'data-fixture': f.id }, el('div', { class: 'team' }, f.home && f.away ? `${f.home.name} vs ${f.away.name}` : `${f.round || ''} · equipos por definir`,
     el('div', { class: 'meta' }, [nice(f.kickoff), f.pitch || '', f.approved ? 'Aprobado' : f.invalidated ? 'Resultado anulado (' + f.invalidated + ') · vuelve a anotarlo' : getQ().some((x) => x.fixtureId === f.id && x.failed) ? 'No se pudo enviar · anótalo de nuevo' : pending().some((x) => x.fixtureId === f.id) ? 'Guardado en tu teléfono · falta enviar' : f.submitted ? 'Enviado · esperando al organizador' : 'Pendiente'].filter(Boolean).join(' · '))),
-    !f.approved && f.home && f.away ? el('button', { class: 'btn inline' + (f.submitted ? ' sec' : ''), [f.submitted && !f.invalidated ? 'data-resend' : 'data-open']: f.id, onclick: () => { OPEN = f.id; NOTE = null; DRAFT = { gl: { h: [], a: [] }, hg: 0, ag: 0, eh: 0, ea: 0, ph: 0, pa: 0, wo: null, cards: null, inv: { h: false, a: false } }; render(); } }, f.submitted && !f.invalidated ? 'Corregir' : 'Anotar') : null))
+    !f.approved && f.home && f.away ? el('button', { class: 'btn inline' + (f.submitted ? ' sec' : ''), [f.submitted && !f.invalidated ? 'data-resend' : 'data-open']: f.id, onclick: () => { OPEN = f.id; NOTE = null; DRAFT = { gl: { h: [], a: [] }, hg: 0, ag: 0, eh: 0, ea: 0, ph: 0, pa: 0, wo: null, cards: null, inv: { h: false, a: false }, note: f.myNote || '' }; render(); } }, f.submitted && !f.invalidated ? 'Corregir' : 'Anotar') : null))
     : [el('div', { class: 'msg' }, 'No tienes partidos asignados.')];
   const failed = getQ().filter((x) => x.failed).map((x) => el('div', { class: 'banner bad', 'data-failed': x.id }, `${x.title}: ${x.failed}`, el('button', { class: 'btn sec', 'data-discard': x.id, onclick: () => { setQ(getQ().filter((y) => y.id !== x.id)); render(); } }, 'Descartar')));
   const exit = el('button', { class: 'btn sec', id: 'logout', onclick: () => { const n = pending().length; if (!window.confirm(n ? `Hay ${n} marcador(es) sin enviar. Si sales y borras, se pierden. ¿Salir de todos modos?` : '¿Salir y borrar los datos de este teléfono?')) return; try { localStorage.removeItem(FXKEY + who()); localStorage.removeItem(QKEY + who()); } catch {} TOKEN = null; FX = null; sessionStorage.removeItem('ref'); NOTE = { kind: 'ok', text: 'Listo: saliste y se borraron los datos de este teléfono.' }; render(); } }, 'Cambiar de árbitro');

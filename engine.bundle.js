@@ -288,7 +288,13 @@ function view(st) {
   return { tables, complete, bracket, bracketById, koLevel, validApproved };
 }
 
-module.exports = { rollbackImpact, tombLedger, recordTombs, rewind, waiverOk, append, verifyChain, replay, view, apply, fresh, foldSeqs, effectiveNodes, seqsOf, hashEvent, participantsOf, GENESIS };
+// T1112-01: a referee's correction starts from HIS OWN latest note on this match (never another referee's, never the organizer's).
+function myNoteOf(st, fixtureId, actor) {
+  const reps = (st.reports && Object.prototype.hasOwnProperty.call(st.reports, fixtureId) ? st.reports[fixtureId] : []);
+  const latest = reps[reps.length - 1];
+  return latest && actor && actor.role === 'arbitro' && latest.by && latest.by.role === 'arbitro' && latest.by.id === actor.id && typeof latest.note === 'string' ? { myNote: latest.note } : {};
+}
+module.exports = { myNoteOf, rollbackImpact, tombLedger, recordTombs, rewind, waiverOk, append, verifyChain, replay, view, apply, fresh, foldSeqs, effectiveNodes, seqsOf, hashEvent, participantsOf, GENESIS };
 
 };
 defs["/engine/rules"]=function(module,exports,require){'use strict';
@@ -511,6 +517,9 @@ const TIEBREAKS = ['h2h_points', 'h2h_gd', 'h2h_gf', 'h2h_result', 'won', 'gd', 
 const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
 const only = (o, keys) => o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).every((k) => keys.includes(k));
 const goals = (s) => isInt(s.hg, 0, 99) && isInt(s.ag, 0, 99);
+// R111: plain text, 1..1000 characters, trimmed, newlines (LF) allowed; no other control character and no direction-control character.
+const NOTE_BAD = /[\p{Bidi_Control}\p{Cc}]/u; // T1112-02: ONE rule (the referee phone uses the same text): every bidi control and every C0/C1 control
+const noteOk = (t) => typeof t === 'string' && t === t.trim() && t.length > 0 && [...t].length <= 1000 && !NOTE_BAD.test(t.replace(/\n/g, ''));
 const score = (s) => only(s, ['hg', 'ag']) && goals(s);
 
 // Public media (videos/albums) lives in engine/media.js and exists ONLY when the build flag is on (engine/flags.js). Default: OFF, the event types do not exist.
@@ -553,7 +562,9 @@ const ORG_EVENTS = {
 // A result report: score, optional extra time / shoot-out, goals [{playerId?, minute, side}].
 // homeId/awayId = the teams actually playing (resolved participants); every attributed scorer must belong to the side credited.
 function validReport(r, fixture, players, homeId, awayId, koLevel, walkoverGoals) {
-  if (!only(r, ['hg', 'ag', 'et', 'pens', 'goals', 'wo', 'cards', 'invasion']) || !goals(r)) return 'marcador inválido';
+  if (!only(r, ['hg', 'ag', 'et', 'pens', 'goals', 'wo', 'cards', 'invasion', 'note']) || !goals(r)) return 'marcador inválido';
+  // R111: the referee's optional written report (incidents, cards, anything). Organizer-only: never copied into the public view (engine/public.js allowlist).
+  if (r.note !== undefined && !noteOk(r.note)) return 'informe escrito inválido (máximo 1000 letras)';
   // W.O. (reglamento "Puntualidad"): `wo` = the side that did NOT show; only under a confirmed walkoverGoals; official score, no goals.
   if (r.wo !== undefined) {
     if (!['h', 'a'].includes(r.wo)) return 'W.O. inválido';
@@ -907,13 +918,16 @@ function rawGroups(groups, opts) {
     for (let pass = 0; pass < rounds; pass++) rr.forEach((rd, ri) => rd.forEach(([a, b]) => pool.push({ g, home: pass % 2 ? b : a, away: pass % 2 ? a : b, order: pass * 100 + ri, n: ++seq })));
   }
   pool.sort((x, y) => x.order - y.order || x.n - y.n);
+  // T-1113 (Dad: "this team plays after 7"): opts.notBefore = { teamId: 'HH:MM' } = that team's earliest kickoff. Validated in planFits.
+  const nb = (id) => { const t = opts.notBefore && Object.prototype.hasOwnProperty.call(opts.notBefore, id) ? hm(opts.notBefore[id]) : NaN; return Number.isNaN(t) ? -1 : t; };
   const lastSlot = {}, out = []; const s0 = hm(start); let slot = 0;
-  while (pool.length) {
+  while (pool.length && slot < 200) {
     const busy = new Set();
     for (let p = 0; p < pitches.length && pool.length; p++) {
       let best = -1, bestScore = Infinity;
       pool.forEach((m, i) => {
         if (busy.has(m.home) || busy.has(m.away)) return;
+        const tNow = s0 + slot * slotMinutes; if (nb(m.home) > tNow || nb(m.away) > tNow) return;
         const rest = Math.min(slot - (lastSlot[m.home] ?? -9), slot - (lastSlot[m.away] ?? -9));
         const score = (rest <= 1 ? 1000 : 0) + i; if (score < bestScore) { bestScore = score; best = i; }
       });
@@ -965,12 +979,14 @@ function planFits(groups, opts = {}) {
   if (names.some((g) => (groups[g] || []).length < 2)) return { ok: false, matches: 0, message: 'Cada grupo necesita al menos 2 equipos.' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.date || '')) return { ok: false, matches: 0, message: 'Falta la fecha del torneo.' };
   if (Number.isNaN(hm(opts.start || '09:00'))) return { ok: false, matches: 0, message: 'La hora del primer partido no es válida.' };
+  const all = new Set(names.flatMap((g) => groups[g] || [])), lim = opts.notBefore || {};
+  for (const [t, v] of Object.entries(lim)) { if (!all.has(t)) return { ok: false, matches: 0, message: 'Hay una hora mínima para un equipo que no está en los grupos.' }; if (!/^\d{1,2}:\d{2}$/.test(String(v)) || Number.isNaN(hm(v))) return { ok: false, matches: 0, message: 'Una hora mínima no es válida (usa por ejemplo 19:00).' }; }
   const rounds = opts.rounds || 1, np = (opts.pitches && opts.pitches.length) || 1, dayEnd = hm(opts.dayEnd || '22:00');
   const { fx, slotMinutes } = rawPlan(groups, opts);
   const groupMatches = fx.filter((f) => f.stage === 'group').length, endMin = Math.max(...fx.map((f) => f.min)) + slotMinutes, knockout = koShape(groups, opts.ko);
   const base = { matches: fx.length, groupMatches, endsAt: clock(Math.min(endMin, 24 * 60 - 1)), endsAt12: clock12(Math.min(endMin, 24 * 60 - 1)), knockout, rounds };
   if (endMin > dayEnd) return { ok: false, ...base, endsAt: endMin >= 24 * 60 ? 'después de medianoche' : clock(endMin), endsAt12: endMin >= 24 * 60 ? 'después de medianoche' : clock12(endMin),
-    message: `Con ${np} cancha${np > 1 ? 's' : ''} no caben ${groupMatches} partidos de grupo (y la fase final) en el día: terminarían ${endMin >= 24 * 60 ? 'después de medianoche' : 'a las ' + clock12(endMin)}. Usa más canchas, una sola vuelta, partidos más cortos o empieza más temprano.` };
+    message: `Con ${np} cancha${np > 1 ? 's' : ''} no caben ${groupMatches} partidos de grupo (y la fase final) en el día: terminarían ${endMin >= 24 * 60 ? 'después de medianoche' : 'a las ' + clock12(endMin)}. Usa más canchas, una sola vuelta, partidos más cortos o empieza más temprano.${Object.keys(lim).length ? ' Las horas mínimas de algunos equipos (juegan después de las ' + [...new Set(Object.values(lim))].map((x) => clock12(hm(x))).join(', ') + ') también empujan el día.' : ''}` };
   const note = knockout === 'cuartos' ? `Se arman todos los partidos, los cuartos de final (pasan los ${qualifiersFor(groups, opts.ko)} primeros de cada grupo), las semifinales y la final.` : knockout === 'none' ? 'Con 3 o más grupos no se arman solas las semifinales ni la final: eso se decide con Papá. Se arman los partidos de grupo.' : knockout === 'final' ? 'Se arman todos los partidos y la final (1.º contra 2.º).' : 'Se arman todos los partidos, las semifinales cruzadas y la final.';
   return { ok: true, ...base, note, qualifiers: qualifiersFor(groups, opts.ko) };
 }
@@ -1069,7 +1085,7 @@ function createCore({ store, tokens, key, now }) {
         const roster = (t) => Object.values(st.players).filter((p) => p.teamId === t).map((p) => ({ id: p.id, number: p.number, displayName: p.displayName }));
         return { id: f.id, stage: f.stage, round: f.round || null, groupId: f.groupId || null, kickoff: f.kickoff || null, pitch: f.pitch || null,
           home: home ? { id: home, name: st.teams[home].name, roster: roster(home) } : null, away: away ? { id: away, name: st.teams[away].name, roster: roster(away) } : null,
-          approved: Object.prototype.hasOwnProperty.call(v.validApproved, f.id), invalidated: f.stage === 'ko' ? v.bracketById[f.id].invalidated : null, submitted: (st.reports[f.id] || []).length };
+          approved: Object.prototype.hasOwnProperty.call(v.validApproved, f.id), invalidated: f.stage === 'ko' ? v.bracketById[f.id].invalidated : null, submitted: (st.reports[f.id] || []).length, ...S.myNoteOf(st, f.id, actor) };
       });
       return res(200, { koLevel: v.koLevel, walkoverGoals: (st.rules && st.rules.walkoverGoals) || null, fixtures: mine });
     }

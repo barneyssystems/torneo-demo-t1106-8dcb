@@ -14,13 +14,36 @@ async function call(method, url, body) {
 const ev = (type, payload) => call('POST', '/api/org/event', { type, payload });
 function note(kind, text) { NOTE = { kind, text }; }
 async function refresh() {
-  try { ST = await call('GET', '/api/org/state'); if (ST.state.rules && ST.state.rules.preset) await loadPresets(); }
-  catch (e) { if (e.status === 401 || e.status === 403) { TOKEN = null; sessionStorage.removeItem('org'); note('bad', 'Código no válido.'); } else note('bad', 'No disponible: ' + e.message); ST = null; }
+  try { ST = await call('GET', '/api/org/state'); if (ST.state.rules && ST.state.rules.preset) await loadPresets(); if (NOTE && NOTE.net) NOTE = null; }
+  catch (e) {
+    // T-1110-N: a moment without signal must not empty Dad's screen or stop the refresh: keep what he sees, say so, and keep trying.
+    if (!e.status && ST) { if (!NOTE || NOTE.net) NOTE = { kind: 'warn', net: true, text: 'Sin señal. Lo que ves puede estar atrasado; se actualiza solo cuando vuelva.' }; }
+    else { if (e.status === 401 || e.status === 403) { TOKEN = null; sessionStorage.removeItem('org'); note('bad', 'Código no válido.'); } else note('bad', 'No disponible: ' + e.message); ST = null; } }
   render();
 }
 let NOTE_TIMER = null;
 async function act(fn, ok) { try { await fn(); note('ok', ok); } catch (e) { if (e.soft) NOTE = null; else if (e.warn) note('warn', e.message); else note('bad', 'No se guardó: ' + e.message); } await refresh();
   if (NOTE && NOTE.kind === 'ok') { window.scrollTo(0, 0); const mine = NOTE; clearTimeout(NOTE_TIMER); NOTE_TIMER = setTimeout(() => { if (NOTE === mine) { NOTE = null; render(); } }, 6000); } }
+// T-1110-N: approving publishes to every family, so a double tap must never land on the next game in the queue (it slides under the finger when the first card leaves).
+let APPROVING = false, APPROVE_HOLD = 0; const APPROVE_HOLD_MS = 1000;
+const approveLocked = () => APPROVING || Date.now() < APPROVE_HOLD;
+const lockApprove = (on) => document.querySelectorAll('[data-approve]').forEach((b) => { b.disabled = on; });
+const approveAttr = () => (approveLocked() ? { disabled: 'disabled' } : {});
+// A lost answer on a weak signal: the approval may have been saved. Look before saying it failed.
+async function sendApproval(payload) {
+  try { await ev('REPORT_APPROVED', payload); }
+  catch (e) { if (e.status) throw e;
+    let st = null; try { st = await call('GET', '/api/org/state'); } catch {}
+    const a = st && st.view.validApproved[payload.fixtureId]; if (a && a.version === payload.version) return;
+    throw Object.assign(new Error('Sin señal: no pude confirmar si se guardó. Cuando vuelva la señal, mira si sigue aquí y tócalo otra vez.'), { warn: true }); }
+}
+async function approveOnce(payload, ok) {
+  if (approveLocked()) return; APPROVING = true; lockApprove(true);
+  try { await act(() => sendApproval(payload()), ok); }
+  finally { APPROVING = false; APPROVE_HOLD = Date.now() + APPROVE_HOLD_MS; lockApprove(true); setTimeout(() => { if (!approveLocked()) lockApprove(false); }, APPROVE_HOLD_MS + 20); }
+}
+// R111: the referee's optional written report, shown to the organizer only (text node, never HTML).
+const refNote = (r, fid) => (r && typeof r.note === 'string' && r.note ? el('div', { class: 'refNoteView', 'data-ref-note': fid }, el('div', { class: 'step' }, 'Informe del árbitro'), el('p', { class: 'noteText' }, r.note)) : null);
 function card(title, ...kids) { return el('div', { class: 'card' }, el('h2', {}, title), el('div', { class: 'pad' }, ...kids)); }
 function field(id, labelText, attrs) { return [el('label', { for: id }, labelText), el('input', { id, ...attrs })]; }
 const val = (id) => document.getElementById(id).value.trim();
@@ -46,7 +69,7 @@ const TABS = {
     const O = PLAN || (PLAN = { pitches: 3, start: '08:00', slot: 100, rounds: 1, ko: 'cuartos' }); // T-1106: 2 × 40 min + halftime ≈ 1 h 40 per game; quarterfinals by default (Dad's format)
     const date = (s.tournament && s.tournament.date) || '';
     const pitches = Array.from({ length: O.pitches }, (_, i) => 'Cancha ' + (i + 1));
-    const opts = { date, start: O.start, slotMinutes: O.slot, rounds: O.rounds, pitches, ko: O.ko === 'cuartos' ? 'cuartos' : undefined };
+    const NB = O.nb || (O.nb = {}), opts = { date, start: O.start, slotMinutes: O.slot, rounds: O.rounds, pitches, ko: O.ko === 'cuartos' ? 'cuartos' : undefined, ...(Object.keys(NB).length ? { notBefore: NB } : {}) };
     const fit = date ? Schedule.planFits(groups, opts) : { ok: false, message: 'Falta la fecha del torneo (se pone en «Armar»).' };
     const sel = (id, label, opts2, cur, key, num, scroll) => [el('div', { class: 'step' }, label), chips(id, opts2, cur, (v) => { PLAN[key] = num ? Number(v) : v; render(); }, label, scroll)];
     const times = []; for (let m = 7 * 60; m <= 13 * 60; m += 30) times.push(String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'));
@@ -67,6 +90,11 @@ const TABS = {
       ...sel('ps', '¿A qué hora es el primer partido?', times.map((t) => [t, L.t12(t)]), O.start, 'start', false, false),
       ...sel('pd', '¿Cuánto dura cada partido? (2 tiempos de 40 + descanso de 10 = 1 h 30)', [[45, '45 min'], [60, '1 hora'], [75, '1 h 15'], [90, '1 h 30'], [100, '1 h 40']], O.slot, 'slot', true),
       ...sel('pk', '¿Desde dónde es la eliminatoria?', [['cuartos', 'Cuartos de final'], ['semis', 'Semifinales']], O.ko, 'ko', false),
+      // T-1113 (Dad: "this team plays after 7"): per-team earliest kickoff, applied when the calendar is built
+      el('details', { id: 'nbBox', ...(Object.keys(NB).length || O.nbTeam ? { open: 'open' } : {}) }, el('summary', { class: 'step' }, '¿Algún equipo solo puede jugar después de cierta hora?'),
+        chips('nbTeam', Object.values(s.teams).filter((t) => t.groupId).sort((a, b) => a.name.localeCompare(b.name)).map((t) => [t.id, t.name]), O.nbTeam || null, (v) => { O.nbTeam = v; render(); }, 'Equipo', true),
+        O.nbTeam ? chips('nbTime', ['10:00', '12:00', '14:00', '16:00', '17:00', '18:00', '19:00', '20:00'].map((t) => [t, 'Después de las ' + L.t12(t)]), NB[O.nbTeam] || null, (v) => { NB[O.nbTeam] = v; O.nbTeam = null; render(); }, 'Hora', true) : null,
+        Object.keys(NB).length ? el('div', { id: 'nbList' }, Object.entries(NB).map(([t, h]) => el('div', { class: 'row', 'data-nb': t }, el('div', { class: 'team' }, `${tname(t)}: después de las ${L.t12(h)}`), el('button', { class: 'linkbtn', 'data-nb-del': t, 'aria-label': 'Quitar la hora de ' + tname(t), onclick: () => { delete NB[t]; render(); } }, 'Quitar')))) : null),
       ...sel('pr', '¿Cuántas veces juega cada equipo contra los demás de su grupo?', [[1, '1 vez (una vuelta)'], [2, '2 veces (ida y vuelta)']], O.rounds, 'rounds', true),
       fit.ok && !(s.rules && s.rules.points) ? el('p', { class: 'meta', id: 'planRulesNote' }, 'Aún no hay reglas: se usarán las del torneo de julio (3-1-0, empate en eliminatoria a penales). Puedes cambiarlas en «Reglas» antes de los partidos.') : null,
       fit.ok ? el('div', { class: 'banner ok', id: 'planInfo' }, `${fit.matches} partidos · el último a las ${fit.endsAt12} · ${fit.note}`) : el('div', { class: 'banner warn', id: 'planWarn', 'data-nofit': '1' }, fit.message),
@@ -109,8 +137,9 @@ const TABS = {
         el('div', { class: 'meta center' }, [it.kickoff ? L.t12(it.kickoff) : '', it.pitch].filter(Boolean).join(' · ') + ' · ' + (it.report.by ? 'lo mandó el ' + (it.report.by.role === 'arbitro' ? 'árbitro' : it.report.by.role) : ''))];
       const gl = (it.report.goals || []).map((g) => { const pl = g.playerId && ST.state.players[g.playerId]; return `${g.minute ? g.minute + "' " : ''}${pl ? pl.displayName : 'gol'} (${g.side === 'h' ? it.home : it.away})`; });
       if (gl.length) kids.push(el('div', { class: 'meta center', 'data-goals-line': it.fixtureId }, 'Goles: ' + gl.join(' · ')));
+      { const n = refNote(it.report, it.fixtureId); if (n) kids.push(n); }
       if (it.isCorrection) kids.push(el('div', { class: 'banner warn' }, `Corrige el resultado ya aprobado (${it.previous.hg}–${it.previous.ag}). Escribe el motivo.`), ...field('why' + it.version, 'Motivo de la corrección', {}));
-      kids.push(el('button', { class: 'btn big', 'data-approve': it.fixtureId, onclick: () => act(() => ev('REPORT_APPROVED', { fixtureId: it.fixtureId, version: it.version, ...(it.isCorrection ? { reason: val('why' + it.version) } : {}) }), 'Aprobado: ' + it.home + ' ' + it.hg + '–' + it.ag + ' ' + it.away + '. Ya lo ven las familias.') }, `Aprobar ${it.hg}–${it.ag}`),
+      kids.push(el('button', { class: 'btn big', 'data-approve': it.fixtureId, ...approveAttr(), onclick: () => approveOnce(() => ({ fixtureId: it.fixtureId, version: it.version, ...(it.isCorrection ? { reason: val('why' + it.version) } : {}) }), 'Aprobado: ' + it.home + ' ' + it.hg + '–' + it.ag + ' ' + it.away + '. Ya lo ven las familias.') }, `Aprobar ${it.hg}–${it.ag}`),
         el('button', { class: 'btn sec', 'data-wrong': it.fixtureId, onclick: () => { TAB = 'resultados'; syncTabs(); render(); } }, 'No está bien · corregir'));
       out.push(el('div', { class: 'card qcard', 'data-pending': it.fixtureId }, el('h2', {}, it.title), el('div', { class: 'pad' }, ...kids)));
     }
@@ -304,10 +333,12 @@ const TABS = {
       const pending = latest && (!ap || latest.version > ap.version) && !stale(latest) ? [latest] : [];
       if (latest && stale(latest) && b && b.invalidated) kids0.push(el('p', { class: 'meta', 'data-voided': f.id }, 'Reporte anterior ' + scoreText(latest) + ' (histórico, ya no vale: ' + b.invalidated + ').'));
       const kids = [el('p', {}, ap ? 'Aprobado: ' + scoreText(ap) : b && b.invalidated ? 'Resultado anulado (' + b.invalidated + '): hay que volver a anotarlo.' : 'Sin resultado aprobado.'), ...kids0];
+      { const n = refNote(ap, f.id); if (n) kids.push(n); } // R111: the note of the approved result stays visible to the organizer
       for (const r of pending) {
         kids.push(el('div', { class: 'row', 'data-pending': f.id }, el('div', { class: 'team' }, 'Reporte ' + scoreText(r) + ' · por ' + r.by.role)));
+        { const n = refNote(r, f.id); if (n) kids.push(n); }
         if (ap) kids.push(...field('why' + r.version, 'Motivo de la corrección', {}));
-        kids.push(el('button', { class: 'btn', 'data-approve': f.id, onclick: () => act(() => ev('REPORT_APPROVED', { fixtureId: f.id, version: r.version, ...(ap ? { reason: val('why' + r.version) } : {}) }), ap ? 'Corrección aprobada.' : 'Resultado aprobado.') }, ap ? 'Aprobar corrección' : 'Aprobar resultado'));
+        kids.push(el('button', { class: 'btn', 'data-approve': f.id, ...approveAttr(), onclick: () => approveOnce(() => ({ fixtureId: f.id, version: r.version, ...(ap ? { reason: val('why' + r.version) } : {}) }), ap ? 'Corrección aprobada.' : 'Resultado aprobado.') }, ap ? 'Aprobar corrección' : 'Aprobar resultado'));
       }
       const canEnter = f.stage === 'group' || (b.home.teamId && b.away.teamId);
       if ((ap || (b && b.invalidated)) && !pending.length && canEnter) {
@@ -387,5 +418,5 @@ function syncTabs() { document.querySelectorAll('#tabs button').forEach((x) => x
 document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => { TAB = b.dataset.tab; NOTE = null; window.scrollTo(0, 0); syncTabs(); render(); }));
 TOKEN ? refresh() : render();
 // New referee reports show up by themselves: refresh every 5 s on the queue/schedule screens when nobody is typing.
-setInterval(() => { if (TOKEN && ST && (TAB === 'cola' || TAB === 'horario') && !(document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) refresh(); }, 5000);
+setInterval(() => { if (TOKEN && (!ST || TAB === 'cola' || TAB === 'horario') && !(document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) refresh(); }, 5000);
 tabKeys(document.querySelector('nav.tabs'), 'main');

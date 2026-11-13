@@ -26,13 +26,16 @@ function rawGroups(groups, opts) {
     for (let pass = 0; pass < rounds; pass++) rr.forEach((rd, ri) => rd.forEach(([a, b]) => pool.push({ g, home: pass % 2 ? b : a, away: pass % 2 ? a : b, order: pass * 100 + ri, n: ++seq })));
   }
   pool.sort((x, y) => x.order - y.order || x.n - y.n);
+  // T-1113 (Dad: "this team plays after 7"): opts.notBefore = { teamId: 'HH:MM' } = that team's earliest kickoff. Validated in planFits.
+  const nb = (id) => { const t = opts.notBefore && Object.prototype.hasOwnProperty.call(opts.notBefore, id) ? hm(opts.notBefore[id]) : NaN; return Number.isNaN(t) ? -1 : t; };
   const lastSlot = {}, out = []; const s0 = hm(start); let slot = 0;
-  while (pool.length) {
+  while (pool.length && slot < 200) {
     const busy = new Set();
     for (let p = 0; p < pitches.length && pool.length; p++) {
       let best = -1, bestScore = Infinity;
       pool.forEach((m, i) => {
         if (busy.has(m.home) || busy.has(m.away)) return;
+        const tNow = s0 + slot * slotMinutes; if (nb(m.home) > tNow || nb(m.away) > tNow) return;
         const rest = Math.min(slot - (lastSlot[m.home] ?? -9), slot - (lastSlot[m.away] ?? -9));
         const score = (rest <= 1 ? 1000 : 0) + i; if (score < bestScore) { bestScore = score; best = i; }
       });
@@ -84,12 +87,14 @@ function planFits(groups, opts = {}) {
   if (names.some((g) => (groups[g] || []).length < 2)) return { ok: false, matches: 0, message: 'Cada grupo necesita al menos 2 equipos.' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.date || '')) return { ok: false, matches: 0, message: 'Falta la fecha del torneo.' };
   if (Number.isNaN(hm(opts.start || '09:00'))) return { ok: false, matches: 0, message: 'La hora del primer partido no es válida.' };
+  const all = new Set(names.flatMap((g) => groups[g] || [])), lim = opts.notBefore || {};
+  for (const [t, v] of Object.entries(lim)) { if (!all.has(t)) return { ok: false, matches: 0, message: 'Hay una hora mínima para un equipo que no está en los grupos.' }; if (!/^\d{1,2}:\d{2}$/.test(String(v)) || Number.isNaN(hm(v))) return { ok: false, matches: 0, message: 'Una hora mínima no es válida (usa por ejemplo 19:00).' }; }
   const rounds = opts.rounds || 1, np = (opts.pitches && opts.pitches.length) || 1, dayEnd = hm(opts.dayEnd || '22:00');
   const { fx, slotMinutes } = rawPlan(groups, opts);
   const groupMatches = fx.filter((f) => f.stage === 'group').length, endMin = Math.max(...fx.map((f) => f.min)) + slotMinutes, knockout = koShape(groups, opts.ko);
   const base = { matches: fx.length, groupMatches, endsAt: clock(Math.min(endMin, 24 * 60 - 1)), endsAt12: clock12(Math.min(endMin, 24 * 60 - 1)), knockout, rounds };
   if (endMin > dayEnd) return { ok: false, ...base, endsAt: endMin >= 24 * 60 ? 'después de medianoche' : clock(endMin), endsAt12: endMin >= 24 * 60 ? 'después de medianoche' : clock12(endMin),
-    message: `Con ${np} cancha${np > 1 ? 's' : ''} no caben ${groupMatches} partidos de grupo (y la fase final) en el día: terminarían ${endMin >= 24 * 60 ? 'después de medianoche' : 'a las ' + clock12(endMin)}. Usa más canchas, una sola vuelta, partidos más cortos o empieza más temprano.` };
+    message: `Con ${np} cancha${np > 1 ? 's' : ''} no caben ${groupMatches} partidos de grupo (y la fase final) en el día: terminarían ${endMin >= 24 * 60 ? 'después de medianoche' : 'a las ' + clock12(endMin)}. Usa más canchas, una sola vuelta, partidos más cortos o empieza más temprano.${Object.keys(lim).length ? ' Las horas mínimas de algunos equipos (juegan después de las ' + [...new Set(Object.values(lim))].map((x) => clock12(hm(x))).join(', ') + ') también empujan el día.' : ''}` };
   const note = knockout === 'cuartos' ? `Se arman todos los partidos, los cuartos de final (pasan los ${qualifiersFor(groups, opts.ko)} primeros de cada grupo), las semifinales y la final.` : knockout === 'none' ? 'Con 3 o más grupos no se arman solas las semifinales ni la final: eso se decide con Papá. Se arman los partidos de grupo.' : knockout === 'final' ? 'Se arman todos los partidos y la final (1.º contra 2.º).' : 'Se arman todos los partidos, las semifinales cruzadas y la final.';
   return { ok: true, ...base, note, qualifiers: qualifiersFor(groups, opts.ko) };
 }
