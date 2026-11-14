@@ -69,7 +69,7 @@ const TABS = {
     const O = PLAN || (PLAN = { pitches: 3, start: '08:00', slot: 100, rounds: 1, ko: 'cuartos' }); // T-1106: 2 × 40 min + halftime ≈ 1 h 40 per game; quarterfinals by default (Dad's format)
     const date = (s.tournament && s.tournament.date) || '';
     const pitches = Array.from({ length: O.pitches }, (_, i) => 'Cancha ' + (i + 1));
-    const NB = O.nb || (O.nb = {}), opts = { date, start: O.start, slotMinutes: O.slot, rounds: O.rounds, pitches, ko: O.ko === 'cuartos' ? 'cuartos' : undefined, ...(Object.keys(NB).length ? { notBefore: NB } : {}) };
+    const NB = O.nb || (O.nb = Object.assign(Object.create(null), (s.format && s.format.notBefore) || {})), /* T1113-03/04: null-prototype map, restored from the saved format */ opts = { date, start: O.start, slotMinutes: O.slot, rounds: O.rounds, pitches, ko: O.ko === 'cuartos' ? 'cuartos' : undefined, ...(Object.keys(NB).length ? { notBefore: NB } : {}) };
     const fit = date ? Schedule.planFits(groups, opts) : { ok: false, message: 'Falta la fecha del torneo (se pone en «Armar»).' };
     const sel = (id, label, opts2, cur, key, num, scroll) => [el('div', { class: 'step' }, label), chips(id, opts2, cur, (v) => { PLAN[key] = num ? Number(v) : v; render(); }, label, scroll)];
     const times = []; for (let m = 7 * 60; m <= 13 * 60; m += 30) times.push(String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'));
@@ -93,7 +93,7 @@ const TABS = {
       // T-1113 (Dad: "this team plays after 7"): per-team earliest kickoff, applied when the calendar is built
       el('details', { id: 'nbBox', ...(Object.keys(NB).length || O.nbTeam ? { open: 'open' } : {}) }, el('summary', { class: 'step' }, '¿Algún equipo solo puede jugar después de cierta hora?'),
         chips('nbTeam', Object.values(s.teams).filter((t) => t.groupId).sort((a, b) => a.name.localeCompare(b.name)).map((t) => [t.id, t.name]), O.nbTeam || null, (v) => { O.nbTeam = v; render(); }, 'Equipo', true),
-        O.nbTeam ? chips('nbTime', ['10:00', '12:00', '14:00', '16:00', '17:00', '18:00', '19:00', '20:00'].map((t) => [t, 'Después de las ' + L.t12(t)]), NB[O.nbTeam] || null, (v) => { NB[O.nbTeam] = v; O.nbTeam = null; render(); }, 'Hora', true) : null,
+        O.nbTeam ? chips('nbTime', (() => { const a = []; for (let m = 8 * 60; m <= 21 * 60; m += 30) a.push(String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0')); return a; })().map((t) => [t, 'Después de las ' + L.t12(t)]), NB[O.nbTeam] || null, (v) => { NB[O.nbTeam] = v; O.nbTeam = null; render(); }, 'Hora', true) : null,
         Object.keys(NB).length ? el('div', { id: 'nbList' }, Object.entries(NB).map(([t, h]) => el('div', { class: 'row', 'data-nb': t }, el('div', { class: 'team' }, `${tname(t)}: después de las ${L.t12(h)}`), el('button', { class: 'linkbtn', 'data-nb-del': t, 'aria-label': 'Quitar la hora de ' + tname(t), onclick: () => { delete NB[t]; render(); } }, 'Quitar')))) : null),
       ...sel('pr', '¿Cuántas veces juega cada equipo contra los demás de su grupo?', [[1, '1 vez (una vuelta)'], [2, '2 veces (ida y vuelta)']], O.rounds, 'rounds', true),
       fit.ok && !(s.rules && s.rules.points) ? el('p', { class: 'meta', id: 'planRulesNote' }, 'Aún no hay reglas: se usarán las del torneo de julio (3-1-0, empate en eliminatoria a penales). Puedes cambiarlas en «Reglas» antes de los partidos.') : null,

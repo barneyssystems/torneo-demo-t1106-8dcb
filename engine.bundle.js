@@ -94,7 +94,7 @@ function apply(st, e) {
     case 'TOURNAMENT_SET': st.tournament = p; break;
     case 'RULES_SET': st.rules = p; break;
     case 'TEAM_ADDED': st.teams[p.id] = p; break;
-    case 'FORMAT_SET': { const keep = p.slotMinutes || (st.format && st.format.slotMinutes); st.format = { rounds: p.rounds, ...(keep ? { slotMinutes: keep } : {}) }; break; } // an omitted length keeps the saved one // R2-03: the competition format the organizer CHOSE (never inferred)
+    case 'FORMAT_SET': { const keep = p.slotMinutes || (st.format && st.format.slotMinutes); st.format = { rounds: p.rounds, ...(keep ? { slotMinutes: keep } : {}), ...(p.notBefore ? { notBefore: Object.assign(Object.create(null), p.notBefore) } : {}) }; break; } // an omitted length keeps the saved one // R2-03: the competition format the organizer CHOSE (never inferred)
     case 'TEAM_WITHDRAWN': st.withdrawn[p.teamId] = { seq: e.seq, reason: p.reason || null }; break;
     case 'PLAYER_ADDED': st.players[p.id] = { ...p, consent: { mediaVerified: false } }; break;
     // Media consent: a minor's identity/media is public ONLY while a guardian consent is ACTIVE, covers 'perfil', and the organizer verified
@@ -533,7 +533,7 @@ const ORG_EVENTS = {
     && (p.preset === undefined || matchesPreset(p))
     && (p.koLevel === undefined || ['ET_THEN_PENS', 'PENS', 'PENDIENTE'].includes(p.koLevel))
     && (p.qualifiersPerGroup === undefined || isInt(p.qualifiersPerGroup, 1, 8)),
-  FORMAT_SET: (p) => only(p, ['rounds', 'slotMinutes']) && (p.rounds === 1 || p.rounds === 2) && (p.slotMinutes === undefined || isInt(p.slotMinutes, 15, 240)),
+  FORMAT_SET: (p) => only(p, ['rounds', 'slotMinutes', 'notBefore']) && (p.rounds === 1 || p.rounds === 2) && (p.slotMinutes === undefined || isInt(p.slotMinutes, 15, 240)) && (p.notBefore === undefined || (p.notBefore && typeof p.notBefore === 'object' && !Array.isArray(p.notBefore) && Object.keys(p.notBefore).length <= 64 && Object.entries(p.notBefore).every(([k, v]) => ID.test(k) && typeof v === 'string' && /^([01]?\d|2[0-3]):([0-5]\d)$/.test(v)))), // T1113-04: per-team earliest kickoff, ids and strict clocks
   FIXTURES_SWAPPED: (p) => only(p, ['a', 'b', 'undoSeq']) && ID.test(p.a) && ID.test(p.b) && p.a !== p.b && (p.undoSeq === undefined || isInt(p.undoSeq, 1, 1e9)),
   NAMES_PUBLIC_SET: (p) => only(p, ['adults']) && typeof p.adults === 'boolean',
   FIXTURE_REFEREE_SET: (p) => only(p, ['fixtureId', 'refereeId']) && ID.test(p.fixtureId) && ID.test(p.refereeId),
@@ -897,6 +897,7 @@ defs["/engine/schedule"]=function(module,exports,require){'use strict';
 // R1 fix round: times are real same-day clock times (never 24:00+), a plan that does not fit the day is REFUSED before anything is created.
 const pad = (n) => String(n).padStart(2, '0');
 const hm = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? Number(m[1]) * 60 + Number(m[2]) : NaN; };
+const CLOCK = /^([01]?\d|2[0-3]):([0-5]\d)$/; // T1113-02: strict 24-hour clock, never normalised (07:60 is refused, not read as 08:00)
 const iso = (date, mins) => `${date}T${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`;
 function roundRobin(teamIds) {
   const t = teamIds.slice(); if (t.length % 2) t.push(null);
@@ -921,8 +922,8 @@ function rawGroups(groups, opts) {
   // T-1113 (Dad: "this team plays after 7"): opts.notBefore = { teamId: 'HH:MM' } = that team's earliest kickoff. Validated in planFits.
   const nb = (id) => { const t = opts.notBefore && Object.prototype.hasOwnProperty.call(opts.notBefore, id) ? hm(opts.notBefore[id]) : NaN; return Number.isNaN(t) ? -1 : t; };
   const lastSlot = {}, out = []; const s0 = hm(start); let slot = 0;
-  while (pool.length && slot < 200) {
-    const busy = new Set();
+  while (pool.length && slot < 5000) { // T1113-01: no silent cap; an unreachable limit leaves `incomplete` set and planFits refuses
+    const busy = new Set(), before0 = out.length;
     for (let p = 0; p < pitches.length && pool.length; p++) {
       let best = -1, bestScore = Infinity;
       pool.forEach((m, i) => {
@@ -936,8 +937,10 @@ function rawGroups(groups, opts) {
       busy.add(m.home); busy.add(m.away); lastSlot[m.home] = slot; lastSlot[m.away] = slot;
       out.push({ id: `m${out.length + 1}`, stage: 'group', groupId: m.g, home: m.home, away: m.away, min: s0 + slot * slotMinutes, pitch: pitches[p], ...(referees.length ? { refereeId: referees[p % referees.length] } : {}) });
     }
-    slot++;
+    const placed = out.length - before0; slot++;
+    if (!placed && pool.length) { const next = Math.min(...pool.map((m) => Math.max(nb(m.home), nb(m.away)))); if (next > s0 + slot * slotMinutes) slot = Math.ceil((next - s0) / slotMinutes); } // jump straight to the next slot where a limited team may play
   }
+  if (pool.length) out.incomplete = true;
   return out;
 }
 // T-1106 (Dad's answer: knockout from quarterfinals): opts.ko = 'cuartos' builds quarterfinals → semifinals → final.
@@ -952,7 +955,7 @@ function rawPlan(groups, opts) {
   const pitches = opts.pitches && opts.pitches.length ? opts.pitches : ['Cancha 1'];
   const referees = opts.referees && opts.referees.length ? opts.referees : pitches.map((_, i) => 'ref' + (i + 1));
   const slotMinutes = opts.slotMinutes || 60; const o = { ...opts, pitches, referees, slotMinutes };
-  const fx = rawGroups(groups, o); const names = Object.keys(groups);
+  const fx = rawGroups(groups, o); const names = Object.keys(groups), incomplete = !!fx.incomplete;
   let t = fx.reduce((m, f) => Math.max(m, f.min), 0) + slotMinutes; const ref = (i) => referees[i % referees.length];
   const ko = (id, round, order, h, a, m, pi) => fx.push({ id, stage: 'ko', round, order, homeSource: h, awaySource: a, min: m, pitch: pitches[pi % pitches.length], refereeId: ref(pi) });
   const shape = koShape(groups, opts.ko), np = pitches.length;
@@ -968,7 +971,7 @@ function rawPlan(groups, opts) {
     if (pitches.length > 1) ko('SF2', 'Semifinal 2', 2, '1' + b, '2' + a, t, 1); else { t += slotMinutes; ko('SF2', 'Semifinal 2', 2, '1' + b, '2' + a, t, 0); }
     t += slotMinutes; ko('F', 'Final', 3, 'W:SF1', 'W:SF2', t, 0);
   } else if (names.length === 1) ko('F', 'Final', 1, '1' + names[0], '2' + names[0], t, 0);
-  return { fx, slotMinutes, pitches };
+  return { fx, slotMinutes, pitches, incomplete };
 }
 const clock = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 const clock12 = (m) => { const h = Math.floor(m / 60), mm = pad(m % 60); return `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? 'a. m.' : 'p. m.'}`; };
@@ -978,11 +981,14 @@ function planFits(groups, opts = {}) {
   if (!names.length) return { ok: false, matches: 0, message: 'Primero hacen falta los equipos y sus grupos.' };
   if (names.some((g) => (groups[g] || []).length < 2)) return { ok: false, matches: 0, message: 'Cada grupo necesita al menos 2 equipos.' };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.date || '')) return { ok: false, matches: 0, message: 'Falta la fecha del torneo.' };
-  if (Number.isNaN(hm(opts.start || '09:00'))) return { ok: false, matches: 0, message: 'La hora del primer partido no es válida.' };
-  const all = new Set(names.flatMap((g) => groups[g] || [])), lim = opts.notBefore || {};
-  for (const [t, v] of Object.entries(lim)) { if (!all.has(t)) return { ok: false, matches: 0, message: 'Hay una hora mínima para un equipo que no está en los grupos.' }; if (!/^\d{1,2}:\d{2}$/.test(String(v)) || Number.isNaN(hm(v))) return { ok: false, matches: 0, message: 'Una hora mínima no es válida (usa por ejemplo 19:00).' }; }
+  if (!CLOCK.test(opts.start || '09:00')) return { ok: false, matches: 0, message: 'La hora del primer partido no es válida.' };
+  if (opts.dayEnd !== undefined && !CLOCK.test(opts.dayEnd)) return { ok: false, matches: 0, message: 'La hora de cierre del día no es válida.' };
+  const all = new Set(names.flatMap((g) => groups[g] || [])), lim = opts.notBefore || Object.create(null);
+  for (const [t, v] of Object.entries(lim)) { if (!all.has(t)) return { ok: false, matches: 0, message: 'Hay una hora mínima para un equipo que no está en los grupos.' }; if (!CLOCK.test(String(v))) return { ok: false, matches: 0, message: 'Una hora mínima no es válida (usa por ejemplo 19:00).' }; }
   const rounds = opts.rounds || 1, np = (opts.pitches && opts.pitches.length) || 1, dayEnd = hm(opts.dayEnd || '22:00');
-  const { fx, slotMinutes } = rawPlan(groups, opts);
+  const { fx, slotMinutes, incomplete } = rawPlan(groups, opts);
+  const expected = names.reduce((n, g) => { const k = (groups[g] || []).length; return n + (k * (k - 1) / 2) * (opts.rounds || 1); }, 0);
+  if (incomplete || fx.filter((f) => f.stage === 'group').length !== expected) return { ok: false, matches: 0, message: 'Con las horas mínimas que pusiste no se pueden jugar todos los partidos de grupo en el día. Quita o cambia alguna hora mínima.' };
   const groupMatches = fx.filter((f) => f.stage === 'group').length, endMin = Math.max(...fx.map((f) => f.min)) + slotMinutes, knockout = koShape(groups, opts.ko);
   const base = { matches: fx.length, groupMatches, endsAt: clock(Math.min(endMin, 24 * 60 - 1)), endsAt12: clock12(Math.min(endMin, 24 * 60 - 1)), knockout, rounds };
   if (endMin > dayEnd) return { ok: false, ...base, endsAt: endMin >= 24 * 60 ? 'después de medianoche' : clock(endMin), endsAt12: endMin >= 24 * 60 ? 'después de medianoche' : clock12(endMin),
@@ -1005,7 +1011,7 @@ function buildPlan(groups, opts = {}) {
   return fx.map(({ min, ...f }) => ({ type: 'FIXTURE_ADDED', payload: { ...f, kickoff: iso(opts.date, min) } }));
 }
 // What the UI saves: the chosen format FIRST (so completeness is checked against it), then the fixtures.
-function planEvents(groups, opts = {}) { return [{ type: 'FORMAT_SET', payload: { rounds: opts.rounds || 1, slotMinutes: opts.slotMinutes || 60 } }, ...buildPlan(groups, opts)]; }
+function planEvents(groups, opts = {}) { const nb = opts.notBefore && Object.keys(opts.notBefore).length ? { notBefore: Object.assign(Object.create(null), opts.notBefore) } : {}; return [{ type: 'FORMAT_SET', payload: { rounds: opts.rounds || 1, slotMinutes: opts.slotMinutes || 60, ...nb } }, ...buildPlan(groups, opts)]; } // T1113-04: the limits are saved with the format
 // Real validator. Without `groups` it checks only clashes (team or pitch twice at the same time). With `groups` and `rounds` it also checks the exact
 // pairings: round 1 = every pair exactly once; round 2 (ida y vuelta) = every ordered pair exactly once. Anything missing, extra or duplicated fails.
 function checkSchedule(fixtures, groups, rounds) {
